@@ -348,28 +348,34 @@ with tab4:
                     row["Estado"] = "🚨 Crítico"
                 
                 datos_abaco.append(row)
-
+        
         if datos_abaco:
-            df = pd.DataFrame(datos_abaco)
-            
-            # Mostramos la tabla (sin la columna numérica del gráfico)
-            st.subheader("📋 Tabla de Sensibilidad")
-            st.table(df.drop(columns=["Espesor Numérico"]))
-            
-            if alerta_detectada:
-                st.warning("🚨 **ALERTA TÉCNICA:** Espesores cercanos a 25 cm dificultan la eficiencia de las **pasajuntas**. Se recomienda optimizar f'c o usar sub-base.")
-            
-            if fuera_de_rango:
-                st.error("🚨 **LÍMITE EXCEDIDO:** El tránsito es demasiado alto para los CBR seleccionados. El espesor calculado supera los 25 cm.")
+                    df = pd.DataFrame(datos_abaco)
+                    st.subheader("📋 Tabla de Sensibilidad CBR vs Espesor")
+                    st.table(df.drop(columns=["Espesor Numérico"]))
+                    
+                    # --- LA NOTA DE ADVERTENCIA QUE SE HABÍA PERDIDO ---
+                    if alerta_detectada:
+                        st.warning("""
+                        🚨 **ALERTA DE OPTIMIZACIÓN TÉCNICA (Espesor > 23 cm):**
+                        Para espesores superiores a 23-25 cm, la metodología AASHTO indica que el diseño se vuelve poco eficiente. 
+                        
+                        **Recomendaciones antes de aumentar el espesor:**
+                        1. **Mejorar la Sub-base:** En lugar de una losa más gruesa, considere una sub-base tratada con cemento para elevar el valor de 'k'.
+                        2. **Revisar Transferencia de Carga:** Verifique si el uso de pasajeros (dovelas) de mayor diámetro puede optimizar el coeficiente 'J'.
+                        3. **Resistencia del Concreto:** Evalúe subir el f'c a 280 o 315 kg/cm² para mejorar el Módulo de Ruptura (S'c).
+                        """)
+                    
+                    if fuera_de_rango:
+                        st.error("⚠️ **LÍMITE EXCEDIDO:** Algunos valores calculados superan los 25 cm. Esto indica un tránsito extremadamente pesado o un suelo muy pobre que requiere estabilización obligatoria.")
+        
+                    # --- GRÁFICO ---
+                    st.subheader("📈 Curva de Sensibilidad del Espesor")
+                    chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
+                    chart_data.columns = ["Espesor Calculado (cm)"]
+                    st.line_chart(chart_data)
+                        
 
-            # --- GRÁFICO ---
-            st.subheader("📈 Curva de Sensibilidad del Espesor")
-            # Usamos la columna numérica para que el gráfico siempre cargue
-            chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
-            chart_data.columns = ["Espesor Calculado (cm)"]
-            st.line_chart(chart_data)
-            
-                
 
 
 
