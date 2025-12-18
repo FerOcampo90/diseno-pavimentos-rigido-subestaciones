@@ -54,7 +54,7 @@ with tab1:
     c1, c2 = st.columns(2)
     with c1:
         tpd = st.number_input("TPD (Vehículos pesados/día)", min_value=1, value=5, step=1)
-        periodo = st.number_input("Periodo de diseño (años)", min_value=1, value=15, step=1)
+        periodo = st.number_input("Periodo de diseño (años)", min_value=1, value=20, step=1)
         tasa = st.number_input("Tasa de crecimiento (%)", min_value=0.0, value=0.0, step=0.1)
     with c2:
         peso_eje = st.number_input("Peso eje más pesado (Ton)", min_value=1.0, value=11.0, step=0.5)
@@ -370,6 +370,7 @@ with tab4:
             st.line_chart(chart_data)
             
                 
+
 
 
 
