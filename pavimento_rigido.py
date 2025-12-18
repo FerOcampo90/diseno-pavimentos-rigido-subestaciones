@@ -311,6 +311,9 @@ with tab4:
         rango_cbr = np.arange(cbr_ini, cbr_fin + cbr_inc, cbr_inc)
         datos_abaco = []
         fuera_de_rango = False
+        
+        # --- SOLUCIÓN AL ERROR: INICIALIZAR VARIABLE ---
+        alerta_detectada = False 
 
         for c_val in rango_cbr:
             ki = 25.5 + 52.5 * np.log10(c_val) if c_val <= 10 else 46.0 + 9.08 * (np.log10(c_val))**4.34
@@ -322,10 +325,14 @@ with tab4:
             if esp_pulg:
                 esp_cm = esp_pulg * 2.54
                 
-                # Clasificación de resultados
                 if esp_cm <= 25.0:
                     adoptado = max(round(esp_cm, 0), 15.0)
-                    nota = "⚠️ Revisar parámetros" if adoptado >= 23.0 else ""
+                    
+                    # Lógica de la alerta técnica (23 a 25 cm)
+                    nota = ""
+                    if 23.0 <= adoptado <= 25.0:
+                        nota = "⚠️ Revisar parámetros"
+                        alerta_detectada = True # Aquí se activa si aplica
                     
                     datos_abaco.append({
                         "CBR (%)": f"{c_val:.1f}%",
@@ -343,31 +350,32 @@ with tab4:
                         "Espesor Adoptado (cm)": "Excede límite",
                         "Estado": "🚨 Espesor excesivo"
                     })
-        #
+
         if datos_abaco:
-                    df = pd.DataFrame(datos_abaco)
-                    
-                    # 1. Mostramos la tabla técnica
-                    st.table(df)
-                    
-                    if alerta_detectada:
-                        st.warning("🚨 **ALERTA TÉCNICA:** Para espesores entre **23 cm y 25 cm**, se recomienda evaluar la optimización de otros parámetros (como la sub-base, el coeficiente J o la resistencia f'c) antes de seguir incrementando el espesor de la losa.")
-                    
-                    # 2. Nota técnica debajo de la tabla
-                    st.markdown("> **Nota:** Para niveles de tránsito bajos, el espesor está gobernado por criterios constructivos y no por capacidad estructural, por lo que la variación con el CBR es limitada.")
-                    
-                    # 3. GRÁFICO CORREGIDO
-                    # Filtramos para asegurarnos de que solo grafique valores numéricos válidos
-                    df_grafico = df[df["Espesor Adoptado (cm)"].apply(lambda x: isinstance(x, (int, float)))]
-                    
-                    if not df_grafico.empty:
-                        st.subheader("📈 Curva de Sensibilidad del Espesor")
-                        # Graficamos el espesor calculado (el valor exacto en cm) frente al CBR
-                        st.line_chart(df_grafico.set_index("CBR (%)")["Espesor Calc. (cm)"])
-                    else:
-                        st.error("No hay datos numéricos suficientes para generar el gráfico.")
+            df = pd.DataFrame(datos_abaco)
+            st.table(df)
+            
+            # Ahora la variable siempre existe (ya sea False o True)
+            if alerta_detectada:
+                st.warning("""
+                🚨 **LÍMITE DE DISEÑO ALCANZADO (Máx. 25 cm):**
+                El espesor calculado supera el umbral técnico y económico recomendado para subestaciones. 
+                Un espesor de esta magnitud dificulta la eficiencia de las **pasajuntas (dovelas)** y sugiere que la estructura no es eficiente.
+                """)
+            
+            if fuera_de_rango:
+                st.error("⚠️ Algunos valores calculados exceden el límite de 25 cm. Revise el CBR o el nivel de tránsito.")
+
+            st.markdown("> **Nota:** Para niveles de tránsito bajos, el espesor está gobernado por criterios constructivos.")
+            
+            # --- GRÁFICO CORREGIDO ---
+            df_grafico = df[df["Espesor Adoptado (cm)"].apply(lambda x: isinstance(x, (int, float)))]
+            if not df_grafico.empty:
+                st.subheader("📈 Curva de Sensibilidad del Espesor")
+                st.line_chart(df_grafico.set_index("CBR (%)")["Espesor Calc. (cm)"])
 
                 
+
 
 
 
