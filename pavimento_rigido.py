@@ -289,6 +289,7 @@ with tab3:
 
 st.markdown("---")
 st.markdown("<p style='color: gray; font-size: 0.8em;'>Nota: El ancho de carril define la geometría constructiva; no es una variable de entrada estructural en la ecuación de la metodología AASHTO 93.</p>", unsafe_allow_html=True)
+
 with tab4:
     st.header("📊 Ábaco de Sensibilidad: Espesor vs CBR")
     
@@ -342,34 +343,32 @@ with tab4:
                         "Espesor Adoptado (cm)": "Excede límite",
                         "Estado": "🚨 Espesor excesivo"
                     })
-
+        #
         if datos_abaco:
-            df = pd.DataFrame(datos_abaco)
-            st.table(df)
-            if fuera_de_rango:
-                mensaje = (
-                    "🚨 **ADVERTENCIA TÉCNICA:** El espesor calculado excede los **25 cm**, "
-                    "superando el umbral técnico recomendado para pavimentos rígidos en subestaciones. "
-                    "Esto indica que la solución no es eficiente bajo las condiciones actuales.\n\n"
-                    "**Acciones sugeridas:**\n"
-                    "1. Incrementar la resistencia del concreto (f'c).\n"
-                    "2. Implementar una sub-base granular tratada para mejorar el módulo k.\n"
-                    "3. Verificar si el nivel de ESALs ingresado es coherente con esta infraestructura."
-                )
-
-                # 👉 Mensaje adicional si NO hay pasadores
-                if j_val >= 4.0:
-                    mensaje += (
-                        "\n4. **Implementar pasadores en las juntas**, lo que mejora la transferencia "
-                        "de carga y reduce el factor J, siendo más eficiente que aumentar el espesor."
-                    )  
-                st.error(mensaje)                                 
-            # Gráfico (solo para valores numéricos)
-            df_plot = df[df["Espesor Adoptado (cm)"] != "Excede límite"]
-            if not df_plot.empty:
-                st.line_chart(df_plot.set_index("CBR (%)")["Espesor Calc. (cm)"])
+                    df = pd.DataFrame(datos_abaco)
+                    
+                    # 1. Mostramos la tabla técnica
+                    st.table(df)
+                    
+                    if alerta_detectada:
+                        st.warning("🚨 **ALERTA TÉCNICA:** Para espesores entre **23 cm y 25 cm**, se recomienda evaluar la optimización de otros parámetros (como la sub-base, el coeficiente J o la resistencia f'c) antes de seguir incrementando el espesor de la losa.")
+                    
+                    # 2. Nota técnica debajo de la tabla
+                    st.markdown("> **Nota:** Para niveles de tránsito bajos, el espesor está gobernado por criterios constructivos y no por capacidad estructural, por lo que la variación con el CBR es limitada.")
+                    
+                    # 3. GRÁFICO CORREGIDO
+                    # Filtramos para asegurarnos de que solo grafique valores numéricos válidos
+                    df_grafico = df[df["Espesor Adoptado (cm)"].apply(lambda x: isinstance(x, (int, float)))]
+                    
+                    if not df_grafico.empty:
+                        st.subheader("📈 Curva de Sensibilidad del Espesor")
+                        # Graficamos el espesor calculado (el valor exacto en cm) frente al CBR
+                        st.line_chart(df_grafico.set_index("CBR (%)")["Espesor Calc. (cm)"])
+                    else:
+                        st.error("No hay datos numéricos suficientes para generar el gráfico.")
 
                 
+
 
 
 
