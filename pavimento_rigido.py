@@ -227,10 +227,11 @@ with tab2:
                 # Mostramos el resultado priorizando cm
                 st.success(f"### Espesor de Losa Recomendado: {esp_final_cm:.1f} cm")
                 st.info(f"*(Valor exacto calculado por AASHTO: {esp_exacto_cm:.2f} cm)*")
-
 with tab3:
     st.header("📐 Recomendaciones Geométricas")
-    if 'esp_final' not in st.session_state:
+    
+    # Cambiamos la validación al nuevo nombre de variable
+    if 'esp_final_cm' not in st.session_state:
         st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para habilitar esta sección.")
     else:
         st.warning("⚠️ **Tránsito Excéntrico:** En subestaciones, el tránsito suele circular cerca del borde. Se recomienda considerar bordes engrosados +25% del espesor en perímetros.")
@@ -241,18 +242,22 @@ with tab3:
             num_juntas_long = 1 if ancho_carril > 4.5 else 0
             ancho_losa = ancho_carril / (num_juntas_long + 1)
             st.metric("Ancho de Losa Efectivo (B)", f"{ancho_losa:.2f} m")
-            
-            if ancho_carril > 4.5:
-                st.write(f"✅ Se recomienda **una junta longitudinal central**.")
-            else:
-                st.write("✅ Se puede construir como losa de ancho único.")
         
         with col_g2:
+            # Recuperamos el espesor en pulgadas original para la fórmula del radio de rigidez (l)
+            # La fórmula técnica del radio de rigidez RELATIVA (ℓ) requiere unidades en pulgadas
+            esp_pulg_calculo = st.session_state['esp_pulg_base']
             nu = 0.15 
-            l_pulg = ((st.session_state['ec_res'] * (st.session_state['esp_final']**3)) / (12 * (1 - nu**2) * st.session_state['k_res']))**0.25
+            
+            # Radio de rigidez relativa (ℓ) en pulgadas
+            l_pulg = ((st.session_state['ec_res'] * (esp_pulg_calculo**3)) / (12 * (1 - nu**2) * st.session_state['k_res']))**0.25
+            
+            # Límite de rigidez (21 veces l) convertido a metros
             limit_rigidez = (21 * l_pulg) * 0.0254
+            
+            # Largo sugerido (L) redondeado a múltiplos de 0.5m
             largo_sug = round((min(ancho_losa * 1.25, limit_rigidez, 5.0)) * 2) / 2
-            st.metric("Largo Sugerido (L)", f"{largo_sug} m")
+            st.metric("Largo Sugerido de Losa (L)", f"{largo_sug} m")
             st.write("📌 **Corte de juntas:** Aserrado temprano (4–12 h después del vaciado).")
 
         st.divider()
@@ -275,10 +280,13 @@ with tab3:
         st.subheader("📝 Resumen de Memoria Técnica")
         resumen_texto = f"""
         El pavimento rígido fue diseñado para un tránsito acumulado de {st.session_state['w18_res']:,.0f} ESALs, 
-        con una confiabilidad del {st.session_state['conf_res']}%. Espesor comercial: {st.session_state['esp_final']} pulg. 
+        con una confiabilidad del {st.session_state['conf_res']}%. 
+        
+        **Espesor Adoptado:** {st.session_state['esp_final_cm']:.1f} cm. 
         La modulación propuesta ({ancho_losa:.2f} m x {largo_sug:.2f} m) cumple criterios técnicos de rigidez. 
         """
         st.info(resumen_texto)
+
 st.markdown("---")
 st.markdown("<p style='color: gray; font-size: 0.8em;'>Nota: El ancho de carril define la geometría constructiva; no es una variable de entrada estructural en la ecuación de la metodología AASHTO 93.</p>", unsafe_allow_html=True)
 with tab4:
@@ -362,5 +370,6 @@ with tab4:
                 st.line_chart(df_plot.set_index("CBR (%)")["Espesor Calc. (cm)"])
 
                 
+
 
 
