@@ -132,16 +132,49 @@ with tab2:
         </div>
         """, unsafe_allow_html=True)
     with col2:
-        st.subheader("🌍 Soporte del Suelo (CBR)")
-        cbr = st.number_input("CBR de diseño (%)", 1.0, 100.0, 5.0)
-        if cbr <= 10:
-            k_val = 25.5 + 52.5 * np.log10(cbr)
-            st.latex(r"k = 25.5 + 52.5 \times \log_{10}(" + f"{cbr}" + r") = " + f"{k_val:.1f}" + r" \text{ pci}")
-        else:
-            k_val = 46.0 + 9.08 * (np.log10(cbr))**4.34
-            st.latex(r"k = 46.0 + 9.08 \times (\log_{10}(" + f"{cbr}" + r"))^{4.34} = " + f"{k_val:.1f}" + r" \text{ pci}")
+        st.subheader("🌍 Soporte del Suelo (Subrasante)")
         
-        st.warning("⚠️ **Aviso Técnico:** La correlación CBR–k es una aproximación teórica. Se recomienda validar con **placa de carga**.")
+        # Selector de método para k
+        metodo_k = st.radio(
+            "Método para definir el Módulo k:",
+            ["Correlación AASHTO (CBR)", "Ensayo de Placa de Carga (Manual)"],
+            horizontal=True
+        )
+        
+        if metodo_k == "Correlación AASHTO (CBR)":
+            cbr = st.number_input("CBR de diseño (%)", 1.0, 100.0, 20.0, help="CBR de la subrasante natural")
+            
+            # Fórmulas de correlación técnica (AASHTO / pci)
+            if cbr <= 10:
+                k_val = 25.5 + 52.5 * np.log10(cbr)
+            else:
+                k_val = 46.0 + 9.08 * (np.log10(cbr))**4.34
+            
+            st.metric("Módulo k Estimado", f"{k_val:.1f} pci")
+            
+            # Advertencia solicitada y Nota Técnica
+            st.warning("⚠️ **Aviso Técnico:** La correlación CBR–k es una aproximación teórica. Se recomienda validar con **placa de carga**.")
+            
+            with st.expander("📝 Ver justificación metodológica"):
+                st.info("""
+                **Criterio de Diseño:** Se utiliza la correlación matemática CBR–k expresada en pci para mantener la coherencia con el modelo empírico de la AASHTO '93. 
+                
+                Gráficos referenciales (como la Fig. 1 de la norma) suelen sobreestimar la capacidad de soporte en subrasantes naturales al no considerar el confinamiento real de la losa. Para un diseño estructural seguro, se prioriza la consistencia con el *AASHTO Road Test*.
+                """)
+        
+        else:
+            # Opción manual para cuando hay prueba de placa (ASTM D1196)
+            col_k1, col_k2 = st.columns(2)
+            with col_k1:
+                k_manual_mpa = st.number_input("k del Ensayo (MPa/m)", 10.0, 150.0, 70.0)
+            with col_k2:
+                # Conversión técnica: 1 MPa/m = 3.684 pci
+                k_val = k_manual_mpa * 3.684
+                st.metric("k para Diseño (pci)", f"{k_val:.1f}")
+            
+            st.success("✅ Usando valor real de ensayo de placa (prevalece sobre estimaciones teóricas).")
+        
+        # El valor 'k_val' se guarda automáticamente para el cálculo AASHTO
 
         st.subheader("🔗 Transferencia de Carga (J)")
         j_manual = st.toggle("Ingresar J manualmente", False)
@@ -313,3 +346,4 @@ with tab4:
                 st.line_chart(df_plot.set_index("CBR (%)")["Espesor Calc. (cm)"])
 
                 
+
