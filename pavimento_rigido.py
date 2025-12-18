@@ -367,14 +367,17 @@ with tab4:
                         """)
                     
                     if fuera_de_rango:
-                        st.error("⚠️ **LÍMITE EXCEDIDO:** Algunos valores calculados superan los 25 cm. Esto indica un tránsito extremadamente pesado o un suelo muy pobre que requiere estabilización obligatoria.")
-        
-                    # --- GRÁFICO ---
-                    st.subheader("📈 Curva de Sensibilidad del Espesor")
-                    chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
-                    chart_data.columns = ["Espesor Calculado (cm)"]
-                    st.line_chart(chart_data)
+                                st.error("⚠️ **LÍMITE EXCEDIDO:** El espesor calculado supera los 25 cm.")
+                                st.warning("""
+                                **🔍 Recomendaciones de Optimización:**
+                                Cuando el espesor calculado resulta tan elevado (ej. > 25 cm), la AASHTO '93 sugiere que el diseño debe optimizarse mediante:
+                                
+                                1. **Mejorar el Valor k:** No diseñe sobre la subrasante natural. Considere una sub-base granular o estabilizada con cemento para alcanzar valores de $k$ cercanos a 250 pci (70 MPa/m).
+                                2. **Incrementar Resistencia (f'c):** Use un concreto de mayor desempeño (f'c 280 o 315 kg/cm²) para elevar el Módulo de Ruptura ($S'_c$).
+                                3. **Verificar Tránsito:** Revise si el número de repeticiones del eje pesado es realista para una subestación.
+                                """)
                         
+
 
 
 
