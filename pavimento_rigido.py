@@ -296,7 +296,7 @@ with tab4:
     st.markdown("""
     ### ¿Qué es el ábaco de diseño?
     Permite evaluar la sensibilidad del espesor frente a variaciones del **CBR**, manteniendo constante el tránsito. 
-    *El límite máximo de diseño para este análisis es de **25 cm**.*
+    *El límite máximo de diseño recomendado para subestaciones es de **25 cm**.*
     """)
 
     if 'w18_res' not in st.session_state:
@@ -311,11 +311,10 @@ with tab4:
         rango_cbr = np.arange(cbr_ini, cbr_fin + cbr_inc, cbr_inc)
         datos_abaco = []
         fuera_de_rango = False
-        
-        # --- SOLUCIÓN AL ERROR: INICIALIZAR VARIABLE ---
-        alerta_detectada = False 
+        alerta_detectada = False # Inicialización para evitar Error
 
         for c_val in rango_cbr:
+            # Cálculo de k (pci)
             ki = 25.5 + 52.5 * np.log10(c_val) if c_val <= 10 else 46.0 + 9.08 * (np.log10(c_val))**4.34
             
             esp_pulg = calcular_espesor_aashto(
@@ -324,57 +323,55 @@ with tab4:
 
             if esp_pulg:
                 esp_cm = esp_pulg * 2.54
+                k_mpa = ki / 3.684 # Conversión para tu memoria
                 
+                # Guardamos siempre el valor numérico para el gráfico
+                row = {
+                    "CBR (%)": f"{c_val:.1f}%",
+                    "k (pci)": round(ki, 1),
+                    "k (MPa/m)": round(k_mpa, 1),
+                    "Espesor Numérico": round(esp_cm, 2)
+                }
+
                 if esp_cm <= 25.0:
                     adoptado = max(round(esp_cm, 0), 15.0)
-                    
-                    # Lógica de la alerta técnica (23 a 25 cm)
-                    nota = ""
+                    row["Espesor Calc. (cm)"] = round(esp_cm, 2)
+                    row["Espesor Adoptado (cm)"] = adoptado
+                    row["Estado"] = "✅ OK"
                     if 23.0 <= adoptado <= 25.0:
-                        nota = "⚠️ Revisar parámetros"
-                        alerta_detectada = True # Aquí se activa si aplica
-                    
-                    datos_abaco.append({
-                        "CBR (%)": f"{c_val:.1f}%",
-                        "k (pci)": round(ki, 1),
-                        "Espesor Calc. (cm)": round(esp_cm, 2),
-                        "Espesor Adoptado (cm)": adoptado,
-                        "Estado": "✅ Dentro de rango" if nota == "" else nota
-                    })
+                        row["Estado"] = "⚠️ Revisar"
+                        alerta_detectada = True
                 else:
                     fuera_de_rango = True
-                    datos_abaco.append({
-                        "CBR (%)": f"{c_val:.1f}%",
-                        "k (pci)": round(ki, 1),
-                        "Espesor Calc. (cm)": f"> 25 cm ({round(esp_cm,1)})",
-                        "Espesor Adoptado (cm)": "Excede límite",
-                        "Estado": "🚨 Espesor excesivo"
-                    })
+                    row["Espesor Calc. (cm)"] = f"Excede ({round(esp_cm,1)})"
+                    row["Espesor Adoptado (cm)"] = "Excede 25cm"
+                    row["Estado"] = "🚨 Crítico"
+                
+                datos_abaco.append(row)
 
         if datos_abaco:
             df = pd.DataFrame(datos_abaco)
-            st.table(df)
             
-            # Ahora la variable siempre existe (ya sea False o True)
+            # Mostramos la tabla (sin la columna numérica del gráfico)
+            st.subheader("📋 Tabla de Sensibilidad")
+            st.table(df.drop(columns=["Espesor Numérico"]))
+            
             if alerta_detectada:
-                st.warning("""
-                🚨 **LÍMITE DE DISEÑO ALCANZADO (Máx. 25 cm):**
-                El espesor calculado supera el umbral técnico y económico recomendado para subestaciones. 
-                Un espesor de esta magnitud dificulta la eficiencia de las **pasajuntas (dovelas)** y sugiere que la estructura no es eficiente.
-                """)
+                st.warning("🚨 **ALERTA TÉCNICA:** Espesores cercanos a 25 cm dificultan la eficiencia de las **pasajuntas**. Se recomienda optimizar f'c o usar sub-base.")
             
             if fuera_de_rango:
-                st.error("⚠️ Algunos valores calculados exceden el límite de 25 cm. Revise el CBR o el nivel de tránsito.")
+                st.error("🚨 **LÍMITE EXCEDIDO:** El tránsito es demasiado alto para los CBR seleccionados. El espesor calculado supera los 25 cm.")
 
-            st.markdown("> **Nota:** Para niveles de tránsito bajos, el espesor está gobernado por criterios constructivos.")
+            # --- GRÁFICO ---
+            st.subheader("📈 Curva de Sensibilidad del Espesor")
+            # Usamos la columna numérica para que el gráfico siempre cargue
+            chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
+            chart_data.columns = ["Espesor Calculado (cm)"]
+            st.line_chart(chart_data)
             
-            # --- GRÁFICO CORREGIDO ---
-            df_grafico = df[df["Espesor Adoptado (cm)"].apply(lambda x: isinstance(x, (int, float)))]
-            if not df_grafico.empty:
-                st.subheader("📈 Curva de Sensibilidad del Espesor")
-                st.line_chart(df_grafico.set_index("CBR (%)")["Espesor Calc. (cm)"])
-
+            st.info("💡 **Nota:** Si la curva está muy alta (ej. 80 cm), regresa a la pestaña de Tránsito y verifica que los ESALs sean coherentes.")
                 
+
 
 
 
