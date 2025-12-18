@@ -369,8 +369,8 @@ with tab4:
             chart_data.columns = ["Espesor Calculado (cm)"]
             st.line_chart(chart_data)
             
-            st.info("💡 **Nota:** Si la curva está muy alta (ej. 80 cm), regresa a la pestaña de Tránsito y verifica que los ESALs sean coherentes.")
                 
+
 
 
 
