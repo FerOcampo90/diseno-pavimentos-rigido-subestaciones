@@ -94,13 +94,43 @@ with tab2:
         pt = st.slider("Serviciabilidad Final (Pt)", 2.0, 3.0, 2.5)
 
         st.subheader("🧱 Propiedades del Concreto")
+        # 1. Definición del Factor k (Correlación para S'c)
+        k_modo = st.radio("Definición del factor k (S'c = k * √f'c):", 
+                          ["Valores Recomendados (Memoria)", "Ingreso Manual"], horizontal=True)
+        
+        if k_modo == "Valores Recomendados (Memoria)":
+            tipo_pav = st.selectbox("Tipo de Pavimento:", 
+                                     ["Autopistas/Carreteras (k=10.8)", 
+                                      "Zonas Industriales (k=10.1)", 
+                                      "Urbanos Secundarios (k=9.4)",
+                                      "Subestaciones / Estándar (k=8.0)"])
+            
+            map_k = {
+                "Autopistas/Carreteras (k=10.8)": 10.8, 
+                "Zonas Industriales (k=10.1)": 10.1,
+                "Urbanos Secundarios (k=9.4)": 9.4,
+                "Subestaciones / Estándar (k=8.0)": 8.0
+            }
+            k_final = map_k[tipo_pav]
+        else:
+            k_final = st.number_input("Ingrese valor de k personalizado:", 7.0, 12.0, 8.0, step=0.1)
+        # 2. Resistencia a la Compresión
         fc_kg = st.selectbox("Resistencia f'c (kg/cm²)", [210, 245, 280, 315, 350], index=2)
         fc_psi = fc_kg * 14.2233
-        sc = 7.5 * np.sqrt(fc_psi)
+        # 3. Cálculos Finales
+        sc = k_final * np.sqrt(fc_psi)
         ec = 57000 * np.sqrt(fc_psi)
+        # 4. Visualización de Resultados
+        st.success(f"**Módulo de Ruptura (S'c):** {sc:.2f} psi")
+        st.info(f"**Módulo de Elasticidad (Ec):** {ec:,.0f} psi")
         
-        st.markdown(f"<p style='color: gray; font-size: 0.85em;'>S'c = 7.5 × √f'c = {sc:.0f} psi | Ec = 57000 × √f'c (ACI) = {ec:,.0f} psi</p>", unsafe_allow_html=True)
-
+        st.markdown(f"""
+        <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px;">
+            <small><b>Fórmulas aplicadas:</b><br>
+            S'c = {k_final} × √f'c (psi)<br>
+            Ec = 57000 × √f'c (psi)</small>
+        </div>
+        """, unsafe_allow_html=True)
     with col2:
         st.subheader("🌍 Soporte del Suelo (CBR)")
         cbr = st.number_input("CBR de diseño (%)", 1.0, 100.0, 5.0)
@@ -281,4 +311,5 @@ with tab4:
             df_plot = df[df["Espesor Adoptado (cm)"] != "Excede límite"]
             if not df_plot.empty:
                 st.line_chart(df_plot.set_index("CBR (%)")["Espesor Calc. (cm)"])
+
                 
