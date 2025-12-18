@@ -203,14 +203,30 @@ with tab2:
 
     st.divider()
     if st.button("🚀 CALCULAR ESTRUCTURA"):
-        esp = calcular_espesor_aashto(w18_total, zr, s0, p0, pt, sc, cd_val, j_val, ec, k_val)
-        if esp:
-            st.session_state['esp_final'] = np.ceil(esp * 2) / 2
-            st.session_state['ec_res'] = ec
-            st.session_state['k_res'] = k_val
-            st.session_state['w18_res'] = w18_total
-            st.session_state['conf_res'] = conf
-            st.success(f"### Espesor Comercial Recomendado: {st.session_state['esp_final']} pulg ({st.session_state['esp_final']*2.54:.1f} cm)")
+            esp_pulg = calcular_espesor_aashto(w18_total, zr, s0, p0, pt, sc, cd_val, j_val, ec, k_val)
+            
+            if esp_pulg:
+                # 1. Convertimos el valor exacto del solver a cm inmediatamente
+                esp_exacto_cm = esp_pulg * 2.54
+                
+                # 2. Aplicamos el redondeo comercial directamente en cm (múltiplos de 1 cm o 0.5 cm según prefieras)
+                # Aquí lo redondeamos al entero superior para facilitar la construcción
+                esp_comercial_cm = np.ceil(esp_exacto_cm) 
+                
+                # 3. Validamos contra el mínimo constructivo de la memoria (15 cm)
+                esp_final_cm = max(esp_comercial_cm, 15.0)
+                
+                # Guardamos en session_state para las otras pestañas
+                st.session_state['esp_final_cm'] = esp_final_cm
+                st.session_state['esp_pulg_base'] = esp_pulg # Para cálculos internos de rigidez
+                st.session_state['ec_res'] = ec
+                st.session_state['k_res'] = k_val
+                st.session_state['w18_res'] = w18_total
+                st.session_state['conf_res'] = conf
+    
+                # Mostramos el resultado priorizando cm
+                st.success(f"### Espesor de Losa Recomendado: {esp_final_cm:.1f} cm")
+                st.info(f"*(Valor exacto calculado por AASHTO: {esp_exacto_cm:.2f} cm)*")
 
 with tab3:
     st.header("📐 Recomendaciones Geométricas")
@@ -346,4 +362,5 @@ with tab4:
                 st.line_chart(df_plot.set_index("CBR (%)")["Espesor Calc. (cm)"])
 
                 
+
 
