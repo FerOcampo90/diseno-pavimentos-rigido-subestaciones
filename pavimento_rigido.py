@@ -189,7 +189,7 @@ with tab2:
         st.info(f"Valor J activo: **{j_val}**")
 
         st.subheader("💧 Coeficiente de Drenaje (Cd)")
-        # --- TABLA DE DRENAJE RESTAURADA ---
+        # --- TABLA DE DRENAJE  ---
         tabla_cd = pd.DataFrame({
             "Calidad de Drenaje": ["Excelente", "Bueno", "Regular", "Pobre", "Muy Pobre"],
             "Agua removida en": ["2 horas", "1 día", "1 semana", "1 mes", "Nunca"],
@@ -354,7 +354,7 @@ with tab4:
                     st.subheader("📋 Tabla de Sensibilidad CBR vs Espesor")
                     st.table(df.drop(columns=["Espesor Numérico"]))
                     
-                    # --- LA NOTA DE ADVERTENCIA QUE SE HABÍA PERDIDO ---
+                    # --- LA NOTA DE ADVERTENCIA  ---
                     if alerta_detectada:
                         st.warning("""
                         🚨 **ALERTA DE OPTIMIZACIÓN TÉCNICA (Espesor > 23 cm):**
@@ -362,7 +362,7 @@ with tab4:
                         
                         **Recomendaciones antes de aumentar el espesor:**
                         1. **Mejorar la Sub-base:** En lugar de una losa más gruesa, considere una sub-base tratada con cemento para elevar el valor de 'k'.
-                        2. **Revisar Transferencia de Carga:** Verifique si el uso de pasajeros (dovelas) de mayor diámetro puede optimizar el coeficiente 'J'.
+                        2. **Revisar Transferencia de Carga:** Verifique si el uso de dovelas de mayor diámetro puede optimizar el coeficiente 'J'.
                         3. **Resistencia del Concreto:** Evalúe subir el f'c a 280 o 315 kg/cm² para mejorar el Módulo de Ruptura (S'c).
                         """)
                     
@@ -377,6 +377,7 @@ with tab4:
                                 3. **Verificar Tránsito:** Revise si el número de repeticiones del eje pesado es realista para una subestación.
                                 """)
                         
+
 
 
 
