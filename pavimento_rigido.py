@@ -377,10 +377,11 @@ with tab4:
                                 3. **Verificar Tránsito:** Revise si el número de repeticiones del eje pesado es realista para una subestación.
                                 """)
                     # --- GRÁFICO ---
-                                st.subheader("📈 Curva de Sensibilidad del Espesor")
-                                chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
-                                chart_data.columns = ["Espesor Calculado (cm)"]
-                                st.line_chart(chart_data)                        
+                    st.subheader("📈 Curva de Sensibilidad del Espesor")
+                    chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
+                    chart_data.columns = ["Espesor Calculado (cm)"]
+                    st.line_chart(chart_data)                        
+
 
 
 
