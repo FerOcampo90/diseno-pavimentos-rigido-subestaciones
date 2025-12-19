@@ -368,8 +368,7 @@ with tab3:
             with col_a2:
                 st.write("🔗 **Barras de Amarre / Anclaje**")
                 st.success(ama_info)
-        
-            
+                 
         
             st.info(f"""
             📌 **Nota sobre Amarres:** - Si seleccionaste 'Soporte Lateral', estas barras son las que **anclan el bordillo a la losa** para que trabaje estructuralmente.
@@ -466,6 +465,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
