@@ -5,7 +5,7 @@ from scipy.stats import norm
 import pandas as pd
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Pavimentos Subestaciones - AASHTO '93", page_icon="🏗️", layout="wide")
+st.set_page_config(page_title="Diseño Pavimento Rigido - Subestaciones - AASHTO '93", page_icon="🏗️", layout="wide")
 
 # --- FUNCIONES TÉCNICAS ---
 def calcular_w18(tpd, periodo, crecimiento, peso_eje):
@@ -377,6 +377,7 @@ with tab4:
                                 3. **Verificar Tránsito:** Revise si el número de repeticiones del eje pesado es realista para una subestación.
                                 """)
                         
+
 
 
 
