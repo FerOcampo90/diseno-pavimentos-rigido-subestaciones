@@ -376,7 +376,12 @@ with tab4:
                                 2. **Incrementar Resistencia (f'c):** Use un concreto de mayor desempeño (f'c 280 o 315 kg/cm²) para elevar el Módulo de Ruptura ($S'_c$).
                                 3. **Verificar Tránsito:** Revise si el número de repeticiones del eje pesado es realista para una subestación.
                                 """)
-                        
+                    # --- GRÁFICO ---
+                                st.subheader("📈 Curva de Sensibilidad del Espesor")
+                                chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
+                                chart_data.columns = ["Espesor Calculado (cm)"]
+                                st.line_chart(chart_data)                        
+
 
 
 
