@@ -318,62 +318,62 @@ with tab3:
 
     st.markdown("---")
     st.markdown("<p style='color: gray; font-size: 0.8em;'>Nota: El ancho de carril define la geometría constructiva; no es una variable de entrada estructural en la ecuación de la metodología AASHTO 93.</p>", unsafe_allow_html=True)
-        st.divider()
-        st.subheader("🔩 Diseño de Acero (Dovelas y Amarre)")
+    st.divider()
+    st.subheader("🔩 Diseño de Acero (Dovelas y Amarre)")
+    
+    if 'esp_final_cm' not in st.session_state:
+        st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para ver el acero.")
+    else:
+        D = st.session_state['esp_final_cm']
         
-        if 'esp_final_cm' not in st.session_state:
-            st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para ver el acero.")
+        # --- LÓGICA DE DOVELAS (PASADORES) ---
+        # Solo se calculan si el usuario marcó "Sí" en la pestaña anterior
+        # (Asumiendo que guardaste 'tiene_dovelas' en session_state o lo lees del radio button)
+        
+        if tiene_dovelas == "No":
+            dov_info = "🚫 No se requieren (Diseño por trabazón de agregados o espesor mínimo)."
         else:
-            D = st.session_state['esp_final_cm']
-            
-            # --- LÓGICA DE DOVELAS (PASADORES) ---
-            # Solo se calculan si el usuario marcó "Sí" en la pestaña anterior
-            # (Asumiendo que guardaste 'tiene_dovelas' en session_state o lo lees del radio button)
-            
-            if tiene_dovelas == "No":
-                dov_info = "🚫 No se requieren (Diseño por trabazón de agregados o espesor mínimo)."
+            if D < 15:
+                dov_info = "No se requieren pasadores para espesores < 15 cm."
+            elif D < 20:
+                dov_info = "Ø 3/4\" (19mm) | Largo: 40 cm | Separación: 30 cm"
+            elif D < 25:
+                dov_info = "Ø 1\" (25mm) | Largo: 45 cm | Separación: 30 cm"
+            elif D < 30:
+                dov_info = "Ø 1 1/4\" (32mm) | Largo: 50 cm | Separación: 30 cm"
             else:
-                if D < 15:
-                    dov_info = "No se requieren pasadores para espesores < 15 cm."
-                elif D < 20:
-                    dov_info = "Ø 3/4\" (19mm) | Largo: 40 cm | Separación: 30 cm"
-                elif D < 25:
-                    dov_info = "Ø 1\" (25mm) | Largo: 45 cm | Separación: 30 cm"
-                elif D < 30:
-                    dov_info = "Ø 1 1/4\" (32mm) | Largo: 50 cm | Separación: 30 cm"
-                else:
-                    dov_info = "Ø 1 1/2\" (38mm) | Largo: 50 cm | Separación: 30 cm"
+                dov_info = "Ø 1 1/2\" (38mm) | Largo: 50 cm | Separación: 30 cm"
+    
+        # --- LÓGICA DE BARRAS DE AMARRE ---
+        # Caso A: Amarre Losa-Losa (si hay juntas longitudinales)
+        # Caso B: Amarre Losa-Bordillo (si el soporte lateral es 'Sí')
         
-            # --- LÓGICA DE BARRAS DE AMARRE ---
-            # Caso A: Amarre Losa-Losa (si hay juntas longitudinales)
-            # Caso B: Amarre Losa-Bordillo (si el soporte lateral es 'Sí')
-            
-            if tiene_soporte == "No" and num_juntas_long == 0:
-                ama_info = "🚫 No se requieren barras de amarre (Losa única sin bordillo anclado)."
+        if tiene_soporte == "No" and num_juntas_long == 0:
+            ama_info = "🚫 No se requieren barras de amarre (Losa única sin bordillo anclado)."
+        else:
+            tipo_amarre = "Losa-Bordillo" if num_juntas_long == 0 else "Losa-Losa / Losa-Bordillo"
+            if D < 20:
+                ama_info = f"{tipo_amarre}: Ø 1/2\" | Largo: 60 cm | Sep: 75 cm"
+            elif D < 25:
+                ama_info = f"{tipo_amarre}: Ø 1/2\" | Largo: 70 cm | Sep: 65 cm"
             else:
-                tipo_amarre = "Losa-Bordillo" if num_juntas_long == 0 else "Losa-Losa / Losa-Bordillo"
-                if D < 20:
-                    ama_info = f"{tipo_amarre}: Ø 1/2\" | Largo: 60 cm | Sep: 75 cm"
-                elif D < 25:
-                    ama_info = f"{tipo_amarre}: Ø 1/2\" | Largo: 70 cm | Sep: 65 cm"
-                else:
-                    ama_info = f"{tipo_amarre}: Ø 5/8\" | Largo: 80 cm | Sep: 60 cm"
+                ama_info = f"{tipo_amarre}: Ø 5/8\" | Largo: 80 cm | Sep: 60 cm"
+    
+        col_a1, col_a2 = st.columns(2)
         
-            col_a1, col_a2 = st.columns(2)
-            
-            with col_a1:
-                st.write("🚀 **Pasadores (Dovelas)**")
-                st.success(dov_info)
-            
-            with col_a2:
-                st.write("🔗 **Barras de Amarre / Anclaje**")
-                st.success(ama_info)
-                 
+        with col_a1:
+            st.write("🚀 **Pasadores (Dovelas)**")
+            st.success(dov_info)
         
-            st.info(f"""
-            📌 **Nota sobre Amarres:** - Si seleccionaste 'Soporte Lateral', estas barras son las que **anclan el bordillo a la losa** para que trabaje estructuralmente.
-            - Si es una sola losa sin bordillo, no necesitas acero de amarre.
-            """)
+        with col_a2:
+            st.write("🔗 **Barras de Amarre / Anclaje**")
+            st.success(ama_info)
+             
+    
+        st.info(f"""
+        📌 **Nota sobre Amarres:** - Si seleccionaste 'Soporte Lateral', estas barras son las que **anclan el bordillo a la losa** para que trabaje estructuralmente.
+        - Si es una sola losa sin bordillo, no necesitas acero de amarre.
+        """)
 with tab4:
     st.header("📊 Ábaco de Sensibilidad: Espesor vs CBR")
     
@@ -465,6 +465,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
