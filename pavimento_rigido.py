@@ -176,51 +176,46 @@ with tab2:
         
         # El valor 'k_val' se guarda automáticamente para el cálculo AASHTO
         st.subheader("🔗 Transferencia de Carga (J)")
-                
-                j_manual = st.toggle("Ingresar J manualmente", False)
-                
-                if j_manual:
-                    j_val = st.number_input("Valor J personalizado", 2.0, 5.0, 3.2, step=0.1)
-                    st.info(f"Valor J manual activo: **{j_val}**")
-                else:
-                    # Diccionario con la data de los escenarios
-                    escenarios_j = {
-                        "Escenario 1: Con Dovelas Y con Bermas/Bordillo (J: 2.7)": {
-                            "valor": 2.7,
-                            "sustento": "Es el escenario ideal. Las dovelas (pasajuntas) se encargan de transferir hasta el 50% de la carga a la losa contigua, reduciendo la deflexión en la junta. Al tener bermas de concreto o bordillos integrales, el neumático no puede circular por el borde libre de la losa, desplazando el esfuerzo hacia el centro.",
-                            "nota_bordillo": True
-                        },
-                        "Escenario 2: Con Dovelas y SIN Bermas/Bordillo (J: 3.2)": {
-                            "valor": 3.2,
-                            "sustento": "Este es el valor estándar de diseño de la AASHTO '93. Tenemos una excelente transferencia de carga entre losas gracias a las dovelas, pero carecemos de soporte lateral. Al no haber bordillo o berma, las cargas que circulan por el borde de la losa generan mayores tensiones.",
-                            "nota_bordillo": False
-                        },
-                        "Escenario 3: SIN Dovelas pero CON Bordillo/Berma (J: 3.8)": {
-                            "valor": 3.8,
-                            "sustento": "Aquí confiamos la transferencia de carga únicamente a la trabazón de agregados (interlock). Sin dovelas, la capacidad de pasar carga disminuye con el tiempo. Sin embargo, el bordillo o berma ayuda significativamente a que el esfuerzo en el borde no sea crítico.",
-                            "nota_bordillo": True
-                        },
-                        "Escenario 4: SIN Dovelas y SIN Bermas (Caso Crítico) (J: 4.2)": {
-                            "valor": 4.2,
-                            "sustento": "Es el diseño más conservador. Al no tener dovelas, la junta es el punto más débil y propenso al escalonamiento. Al no tener bermas, el vehículo circula por el borde libre, donde la losa no tiene apoyo lateral.",
-                            "nota_bordillo": False
-                        }
-                    }
         
-                    seleccion = st.radio("Seleccione el Escenario de Carga:", list(escenarios_j.keys()))
-                    
-                    # Extraer datos de la selección
-                    datos_escenario = escenarios_j[seleccion]
-                    j_val = datos_escenario["valor"]
-                    
-                    # Mostrar Sustento
-                    st.markdown(f"<div style='font-size: 0.9em; color: #555; text-align: justify;'><b>Sustento:</b> {datos_escenario['sustento']}</div>", unsafe_allow_html=True)
-                    
-                    # Mostrar Nota sobre Bordillo si aplica (Escenarios 1 y 3)
-                    if datos_escenario["nota_bordillo"]:
-                        st.warning("⚠️ **Nota sobre el Bordillo:** Para que sea estructuralmente efectivo, el bordillo debe ser **integral** (vaciado monolíticamente con la losa) o estar **anclado con barras de amarre**. Si solo es un bordillo sobrepuesto, no aporta soporte lateral.")
-                    
-                    st.info(f"Valor J seleccionado: **{j_val}**")
+        j_manual = st.toggle("Ingresar J manualmente", False)
+
+        if j_manual:
+            j_val = st.number_input("Valor J personalizado", 2.0, 5.0, 3.2, step=0.1)
+            st.info(f"Valor J manual activo: **{j_val}**")
+        else:
+            escenarios_j = {
+                "Escenario 1: Con Dovelas Y con Bermas/Bordillo (J: 2.7)": {
+                    "valor": 2.7,
+                    "sustento": "Es el escenario ideal. Las dovelas (pasajuntas) transfieren hasta el 50% de la carga. Las bermas o bordillos integrales evitan que el neumático circule por el borde libre, reduciendo el agrietamiento.",
+                    "nota_bordillo": True
+                },
+                "Escenario 2: Con Dovelas y SIN Bermas/Bordillo (J: 3.2)": {
+                    "valor": 3.2,
+                    "sustento": "Valor estándar AASHTO '93. Excelente transferencia de carga por dovelas, pero sin soporte lateral. Las cargas en el borde generan mayores tensiones.",
+                    "nota_bordillo": False
+                },
+                "Escenario 3: SIN Dovelas pero CON Bordillo/Berma (J: 3.8)": {
+                    "valor": 3.8,
+                    "sustento": "Transferencia por trabazón de agregados (interlock). El bordillo/berma ayuda a que el esfuerzo en el borde no sea crítico.",
+                    "nota_bordillo": True
+                },
+                "Escenario 4: SIN Dovelas y SIN Bermas (J: 4.2)": {
+                    "valor": 4.2,
+                    "sustento": "Caso crítico. Sin dovelas la junta es propensa al escalonamiento y sin bermas el camión circula por el borde libre sin apoyo lateral.",
+                    "nota_bordillo": False
+                }
+            }
+
+            seleccion = st.radio("Seleccione escenario:", list(escenarios_j.keys()))
+            datos_esc = escenarios_j[seleccion]
+            j_val = datos_esc["valor"]
+
+            st.write(f"**Sustento:** {datos_esc['sustento']}")
+
+            if datos_esc["nota_bordillo"]:
+                st.warning("⚠️ **Nota sobre el Bordillo:** Para ser efectivo, debe ser integral (vaciado monolítico) o anclado con barras de amarre. Si es sobrepuesto, no aporta soporte lateral.")
+
+            st.info(f"Valor J: **{j_val}**")
 
         st.subheader("💧 Coeficiente de Drenaje (Cd)")
         # --- TABLA DE DRENAJE  ---
@@ -415,6 +410,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
