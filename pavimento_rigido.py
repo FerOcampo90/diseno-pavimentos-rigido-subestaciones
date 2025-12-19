@@ -36,7 +36,7 @@ def calcular_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k):
     return None
 
 # --- INTERFAZ ---
-st.title("🏗️ Diseñador Profesional de Pavimentos - Subestaciones")
+st.title("🏗️ Diseñador Pavimento Rigido - Subestaciones")
 
 # Visualización de todas las fórmulas de diseño
 with st.expander("📝 Ecuaciones de Diseño (AASHTO 93 & Correlaciones)"):
@@ -377,6 +377,7 @@ with tab4:
                                 3. **Verificar Tránsito:** Revise si el número de repeticiones del eje pesado es realista para una subestación.
                                 """)
                         
+
 
 
 
