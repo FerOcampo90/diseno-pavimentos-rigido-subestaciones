@@ -15,7 +15,40 @@ def calcular_w18(tpd, periodo, crecimiento, peso_eje):
     r = crecimiento / 100
     f_crec = periodo * 365 if r == 0 else ((1 + r)**periodo - 1) / r * 365
     return fe, tpd * fe * f_crec
+    
+def calcular_k_combinado(k_subrasante, espesor_base_cm, tipo_material):
+    """
+    Estima el k combinado (Losa sobre base) según AASHTO/PCA.
+    k_subrasante: pci
+    espesor_base_cm: cm
+    tipo_material: 'Granular' o 'Tratada con Cemento'
+    """
+    # Conversión a pulgadas para fórmulas empíricas
+    h_pulg = espesor_base_cm / 2.54
+    
+    # Límites lógicos para evitar valores irreales en la extrapolación
+    if h_pulg < 3: return k_subrasante # Menos de 7.5cm no aporta mucho estructuralmente
+    
+    if tipo_material == "Base Granular (Zahorra)":
+        # Aproximación logarítmica del ábaco de bases granulares
+        # Incremento moderado
+        factor = 1 + (0.15 * np.log(h_pulg))
+        k_nuevo = k_subrasante * factor
+        
+    elif tipo_material == "Suelo Cemento / Estabilizada":
+        # Aproximación para bases tratadas (aumentan mucho la rigidez)
+        # El incremento es mucho más agresivo
+        factor = 1 + (0.35 * np.log(h_pulg))
+        
+        # Las bases tratadas suelen tener un 'tope' efectivo de aporte a la losa
+        k_nuevo = k_subrasante * factor * 1.25 
+        
+    else:
+        k_nuevo = k_subrasante
 
+    # Tope máximo recomendado (valores k > 500-600 pci actúan como losa rígida)
+    return min(k_nuevo, 800.0)
+    
 def calcular_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k):
     d_psi = p0 - pt
     def ecuacion(D):
@@ -132,49 +165,89 @@ with tab2:
         </div>
         """, unsafe_allow_html=True)
     with col2:
-        st.subheader("🌍 Soporte del Suelo (Subrasante)")
-        
-        # Selector de método para k
-        metodo_k = st.radio(
-            "Método para definir el Módulo k:",
-            ["Correlación AASHTO (CBR)", "Ensayo de Placa de Carga (Manual)"],
-            horizontal=True
-        )
-        
-        if metodo_k == "Correlación AASHTO (CBR)":
-            cbr = st.number_input("CBR de diseño (%)", 1.0, 100.0, 20.0, help="CBR de la subrasante natural")
+            st.subheader("🌍 Soporte del Suelo (Sistema Multicapa)")
             
-            # Fórmulas de correlación técnica (AASHTO / pci)
-            if cbr <= 10:
-                k_val = 25.5 + 52.5 * np.log10(cbr)
-            else:
-                k_val = 46.0 + 9.08 * (np.log10(cbr))**4.34
+            # --- SECCIÓN 1: SUELO NATURAL ---
+            st.markdown("#### 1. Subrasante Natural")
             
-            st.metric("Módulo k Estimado", f"{k_val:.1f} pci")
+            # Selector de método para k
+            metodo_k = st.radio(
+                "Método para definir k natural:",
+                ["Correlación AASHTO (CBR)", "Ensayo de Placa de Carga (Manual)"],
+                horizontal=True
+            )
             
-            # Advertencia solicitada y Nota Técnica
-            st.warning("⚠️ **Aviso Técnico:** La correlación CBR–k es una aproximación teórica. Se recomienda validar con **placa de carga**.")
-            
-            with st.expander("📝 Ver justificación metodológica"):
-                st.info("""
-                **Criterio de Diseño:** Se utiliza la correlación matemática CBR–k expresada en pci para mantener la coherencia con el modelo empírico de la AASHTO '93. 
+            if metodo_k == "Correlación AASHTO (CBR)":
+                cbr = st.number_input("CBR de la Subrasante (%)", 1.0, 100.0, 3.0, step=0.5, help="Valor de soporte del suelo natural")
                 
-                Gráficos referenciales (como la Fig. 1 de la norma) suelen sobreestimar la capacidad de soporte en subrasantes naturales al no considerar el confinamiento real de la losa. Para un diseño estructural seguro, se prioriza la consistencia con el *AASHTO Road Test*.
-                """)
-        
-        else:
-            # Opción manual para cuando hay prueba de placa (ASTM D1196)
-            col_k1, col_k2 = st.columns(2)
-            with col_k1:
-                k_manual_mpa = st.number_input("k del Ensayo (MPa/m)", 10.0, 150.0, 70.0)
-            with col_k2:
-                # Conversión técnica: 1 MPa/m = 3.684 pci
-                k_val = k_manual_mpa * 3.684
-                st.metric("k para Diseño (pci)", f"{k_val:.1f}")
+                # Fórmulas de correlación técnica
+                if cbr <= 10:
+                    k_natural = 25.5 + 52.5 * np.log10(cbr)
+                else:
+                    k_natural = 46.0 + 9.08 * (np.log10(cbr))**4.34
+                
+                st.caption(f"Valor k natural calculado: **{k_natural:.1f} pci**")
+                
+                # --- NOTAS RECUPERADAS ---
+                st.warning("⚠️ **Aviso Técnico:** La correlación CBR–k es una aproximación teórica. Se recomienda validar con **placa de carga**.")
+                
+                with st.expander("📝 Ver justificación metodológica"):
+                    st.info("""
+                    **Criterio de Diseño:** Se utiliza la correlación matemática CBR–k expresada en pci para mantener la coherencia con el modelo empírico de la AASHTO '93. 
+                    
+                    Gráficos referenciales (como la Fig. 1 de la norma) suelen sobreestimar la capacidad de soporte en subrasantes naturales al no considerar el confinamiento real de la losa. Para un diseño estructural seguro, se prioriza la consistencia con el *AASHTO Road Test*.
+                    """)
+                # --------------------------
             
-            st.success("✅ Usando valor real de ensayo de placa (prevalece sobre estimaciones teóricas).")
-        
-        # El valor 'k_val' se guarda automáticamente para el cálculo AASHTO
+            else:
+                # Opción manual (Ensayo de Placa)
+                col_k1, col_k2 = st.columns(2)
+                with col_k1:
+                    k_manual_mpa = st.number_input("k del Ensayo (MPa/m)", 10.0, 150.0, 40.0)
+                with col_k2:
+                    k_natural = k_manual_mpa * 3.684
+                    st.metric("k Natural (pci)", f"{k_natural:.1f}")
+                
+                st.success("✅ Usando valor real de ensayo de placa.")
+    
+            # --- SECCIÓN 2: MEJORAMIENTO / SUB-BASE ---
+            st.divider()
+            st.markdown("#### 2. Mejoramiento / Sub-base")
+            st.caption("El uso de una base incrementa el valor de reacción (k combinado).")
+            
+            usar_base = st.checkbox("¿Incluir capa de Base/Mejoramiento?", value=True)
+            
+            if usar_base:
+                c_b1, c_b2 = st.columns(2)
+                with c_b1:
+                    tipo_base = st.selectbox("Material de Base:", ["Base Granular (Zahorra)", "Suelo Cemento / Estabilizada"])
+                with c_b2:
+                    esp_base = st.number_input("Espesor Base (cm):", 10.0, 60.0, 15.0, step=5.0)
+                
+                # Calculamos el k combinado usando la función nueva
+                k_diseno = calcular_k_combinado(k_natural, esp_base, tipo_base)
+                
+                # Cálculo del porcentaje de mejora para mostrarlo visualmente
+                mejora_pct = ((k_diseno - k_natural) / k_natural) * 100
+                
+                st.metric("Módulo k Combinado (Diseño)", f"{k_diseno:.1f} pci", delta=f"+{mejora_pct:.0f}% Incremento")
+                
+                if tipo_base == "Suelo Cemento / Estabilizada" and esp_base < 15:
+                    st.warning("⚠️ Recomendación: Para bases estabilizadas use espesores ≥ 15 cm.")
+                    
+            else:
+                # Si no hay base, el k de diseño es el natural
+                k_diseno = k_natural
+                st.metric("Módulo k de Diseño", f"{k_diseno:.1f} pci")
+                st.info("Diseño directo sobre subrasante natural (No recomendado para cargas altas).")
+    
+            # Asignamos la variable final 'k_val' que usa el resto del programa
+            k_val = k_diseno
+    
+            # ... Continúa aquí el código original de "Transferencia de Carga (J)" ...
+            st.subheader("🔗 Transferencia de Carga (J)")
+            # (Asegúrate de copiar el resto del bloque J corregido de la respuesta anterior)
+            # ...
         st.subheader("🔗 Transferencia de Carga (J)")
         
         j_manual = st.toggle("Ingresar J manualmente", False)
@@ -513,6 +586,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
