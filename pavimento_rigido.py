@@ -243,11 +243,6 @@ with tab2:
 
         # Asignamos la variable final 'k_val' que usa el resto del programa
         k_val = k_diseno
-
-        # ... Continúa aquí el código original de "Transferencia de Carga (J)" ...
-        st.subheader("🔗 Transferencia de Carga (J)")
-        # (Asegúrate de copiar el resto del bloque J corregido de la respuesta anterior)
-        # ...
         st.subheader("🔗 Transferencia de Carga (J)")
         
         j_manual = st.toggle("Ingresar J manualmente", False)
@@ -586,6 +581,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
