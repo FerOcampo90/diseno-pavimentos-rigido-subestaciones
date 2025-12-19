@@ -657,6 +657,87 @@ with tab4:
             chart_data = df.set_index("CBR Suelo (%)")[["Espesor Numérico"]]
             chart_data.columns = ["Espesor Calculado (cm)"]
             st.line_chart(chart_data)
+with tab5:
+    st.header("📝 Generador de Notas Técnicas para Planos")
+    
+    if 'esp_final_cm' not in st.session_state:
+        st.warning("⚠️ Debe realizar el cálculo en la pestaña 'Parámetros de Diseño' para generar las notas específicas.")
+    else:
+        # Recuperamos todas las variables
+        D = st.session_state['esp_final_cm']
+        fc = st.session_state['fc_guardado']
+        mr_psi = st.session_state['sc_guardado']
+        # Convertimos MR a kg/cm2 aprox (psi / 14.22)
+        mr_kg = round(mr_psi / 14.22, 1)
+        
+        largo = st.session_state.get('largo_losa', 4.0)
+        t_base = st.session_state['tipo_base']
+        e_base = st.session_state['esp_base']
+        usa_dovelas = st.session_state['tiene_dovelas'] == "Sí"
+        
+        # Fecha actual
+        fecha = datetime.date.today().strftime("%d/%m/%Y")
+
+        st.markdown("Copie estas notas y péguelas en la sección de **Especificaciones Técnicas** de su plano de pavimentos.")
+
+        # --- GENERACIÓN DEL TEXTO ---
+        texto_notas = f"""
+NOTAS GENERALES DE PAVIMENTO RÍGIDO (SUBESTACIÓN)
+FECHA DE DISEÑO: {fecha}
+
+1. ESPECIFICACIONES DE MATERIALES
+   1.1. CONCRETO:
+        - Resistencia a la Compresión (f'c): {fc} kg/cm² a los 28 días.
+        - Módulo de Rotura (MR): {mr_kg} kg/cm² (Viga tercio central) a los 28 días.
+        - Tamaño Máximo de Agregado: 1" (25 mm) o 1/3 del espesor de la losa.
+        - Asentamiento (Slump): 2" - 3" para pavimentadora, 3" - 4" manual.
+   
+   1.2. ACERO DE REFUERZO:
+        - Barras corrugadas (Amarre): Grado 60 (Fy = 4200 kg/cm²).
+        - Barras lisas (Dovelas/Pasadores): Acero liso SAE 1020 o similar, corte limpio sin rebabas.
+        - Las dovelas deben estar lubricadas/engrasadas en la mitad de su longitud.
+
+2. ESTRUCTURA DEL PAVIMENTO
+   2.1. LOSA DE CONCRETO:
+        - Espesor de diseño (D): {D} cm.
+        - Acabado superficial: Micro-texturizado (arpillera) y macro-texturizado (peine metálico) transversal.
+   
+   2.2. SOPORTE (BASE):
+        - Tipo: {t_base}.
+        - Espesor: {e_base if st.session_state['usar_base'] else 'N/A'} cm.
+        - Compactación: Mínimo 98% del Proctor Modificado.
+        - Se debe humedecer la base antes de vaciar el concreto (sin encharcamientos).
+
+3. JUNTAS Y MODULACIÓN
+   3.1. DIMENSIONES:
+        - Modulación máxima recomendada: {largo} m x {largo} m.
+        - Relación Largo/Ancho máxima: 1.25 (Recomendado) - 1.50 (Límite).
+   
+   3.2. ASERRADO (CORTE DE JUNTAS):
+        - Ventana de corte: Iniciar tan pronto el concreto soporte el peso del equipo y antes de que ocurran grietas por contracción (aprox. 4 a 12 horas post-vaciado).
+        - Profundidad de corte: Mínimo 1/3 del espesor de la losa ({round(D/3, 1)} cm).
+        - Ancho de corte: 3 mm a 6 mm según sello a utilizar.
+
+4. ACERO DE TRANSFERENCIA (DOVELAS)
+   {f"- SI REQUIERE: Barras lisas alineadas perfectamente con el eje de la vía. Usar canastas de soporte." if usa_dovelas else "- NO REQUIERE: Transferencia de carga por trabazón de agregados."}
+   {f"- Diámetro y separación según cálculo en memoria." if usa_dovelas else ""}
+
+5. CURADO
+   - Aplicar compuesto de curado (membrana) inmediatamente desaparezca el brillo del agua de sangrado.
+   - Rendimiento mínimo: Según fabricante (aprox 20 m²/galón).
+   - Proteger del tráfico mínimo 7 días o hasta alcanzar el 70% de la resistencia.
+"""
+        
+        # Mostramos el texto en un bloque de código para copiar fácil
+        st.text_area("📋 Texto para copiar (Ctrl+C):", value=texto_notas, height=500)
+        
+        # Botón de descarga (Opcional, crea un archivo .txt)
+        st.download_button(
+            label="💾 Descargar Notas (.txt)",
+            data=texto_notas,
+            file_name=f"Notas_Pavimento_{fecha.replace('/','-')}.txt",
+            mime="text/plain"
+        )
 
 
 
