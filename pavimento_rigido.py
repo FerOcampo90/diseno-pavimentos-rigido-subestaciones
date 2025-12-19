@@ -188,28 +188,38 @@ with tab2:
                     "valor": 2.7,
                     "sustento": "Es el escenario ideal. Las dovelas (pasajuntas) transfieren hasta el 50% de la carga. Las bermas o bordillos integrales evitan que el neumático circule por el borde libre, reduciendo el agrietamiento.",
                     "nota_bordillo": True
+                    "dovelas": "Sí",
+                    "soporte": "Sí"
                 },
                 "Escenario 2: Con Dovelas y Sin Bermas/Bordillo (J: 3.2)": {
                     "valor": 3.2,
                     "sustento": "Valor estándar AASHTO '93. Excelente transferencia de carga por dovelas, pero sin soporte lateral. Las cargas en el borde generan mayores tensiones.",
                     "nota_bordillo": False
+                    "dovelas": "Sí",
+                    "soporte": "No"
                 },
                 "Escenario 3: Sin Dovelas pero Con Bordillo/Berma (J: 3.8)": {
                     "valor": 3.8,
                     "sustento": "Transferencia por trabazón de agregados (interlock). El bordillo/berma ayuda a que el esfuerzo en el borde no sea crítico.",
                     "nota_bordillo": True
+                    "dovelas": "No",
+                    "soporte": "Sí"
                 },
                 "Escenario 4: Sin Dovelas y Sin Bermas (J: 4.2)": {
                     "valor": 4.2,
                     "sustento": "Caso crítico. Sin dovelas la junta es propensa al escalonamiento y sin bermas el camión circula por el borde libre sin apoyo lateral.",
                     "nota_bordillo": False
+                    "dovelas": "No",
+                    "soporte": "No"
                 }
             }
 
             seleccion = st.radio("Seleccione escenario:", list(escenarios_j.keys()))
             datos_esc = escenarios_j[seleccion]
             j_val = datos_esc["valor"]
-
+            # --- CORRECCIÓN: Definir las variables aquí ---
+            tiene_dovelas = datos_esc["dovelas"]
+            tiene_soporte = datos_esc["soporte"]
             st.write(f"**Sustento:** {datos_esc['sustento']}")
 
             if datos_esc["nota_bordillo"]:
@@ -468,6 +478,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
