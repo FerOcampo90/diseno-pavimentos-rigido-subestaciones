@@ -306,7 +306,7 @@ with tab4:
             c1, c2, c3 = st.columns(3)
             with c1: cbr_ini = st.number_input("CBR Inicial (%)", 1.0, 50.0, 3.0, key="aba_cbr_ini")
             with c2: cbr_fin = st.number_input("CBR Final (%)", 5.0, 100.0, 20.0, key="aba_cbr_fin")
-            with c3: cbr_inc = st.number_input("Incremento (%)", 0.5, 5.0, 1.0, key="aba_cbr_inc")
+            with c3: cbr_inc = st.number_input("Incremento (%)", 0.5, 5.0, 5.0, key="aba_cbr_inc")
 
         rango_cbr = np.arange(cbr_ini, cbr_fin + cbr_inc, cbr_inc)
         datos_abaco = []
@@ -381,6 +381,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
