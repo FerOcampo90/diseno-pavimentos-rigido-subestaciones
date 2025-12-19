@@ -392,7 +392,7 @@ with tab2:
                 st.session_state['tipo_base_guardado'] = tipo_base
                 st.session_state['esp_base_guardado'] = esp_base
             # ------------------------------------------------
-            
+            st.toast("✅ Cálculo realizado y datos guardados correctamente.")
             st.success(f"### Espesor de Losa Recomendado: {esp_final_cm:.1f} cm")
             st.info(f"*(Valor exacto AASHTO: {esp_exacto_cm:.2f} cm | k diseño: {k_val:.1f} pci)*")
 
@@ -654,6 +654,7 @@ with tab4:
             chart_data = df.set_index("CBR Suelo (%)")[["Espesor Numérico"]]
             chart_data.columns = ["Espesor Calculado (cm)"]
             st.line_chart(chart_data)
+
 
 
 
