@@ -202,7 +202,7 @@ with tab2:
                         },
                         "Escenario 4: SIN Dovelas y SIN Bermas (Caso Crítico) (J: 4.2)": {
                             "valor": 4.2,
-                            "sustento": "Es el diseño más conservador. Al no tener dovelas, la junta es el punto más débil y propenso al escalonamiento. Al no tener bermas, el vehículo circula por el borde libre, donde la losa no tiene apoyo lateral. El valor de 4.2 penaliza el espesor.",
+                            "sustento": "Es el diseño más conservador. Al no tener dovelas, la junta es el punto más débil y propenso al escalonamiento. Al no tener bermas, el vehículo circula por el borde libre, donde la losa no tiene apoyo lateral.",
                             "nota_bordillo": False
                         }
                     }
@@ -214,15 +214,13 @@ with tab2:
                     j_val = datos_escenario["valor"]
                     
                     # Mostrar Sustento
-                    st.markdown(f"**Sustento:** {datos_escenario['sustento']}")
+                    st.markdown(f"<div style='font-size: 0.9em; color: #555; text-align: justify;'><b>Sustento:</b> {datos_escenario['sustento']}</div>", unsafe_allow_html=True)
                     
                     # Mostrar Nota sobre Bordillo si aplica (Escenarios 1 y 3)
                     if datos_escenario["nota_bordillo"]:
-                        st.warning("⚠️ **Nota sobre el Bordillo:** Para que sea estructuralmente efectivo, el bordillo debe ser **integral** (vaciado monolíticamente con la losa) o estar **anclado con barras de amarre**. Si solo es un bordillo sobrepuesto, no aporta soporte lateral y el valor de J debería subir.")
+                        st.warning("⚠️ **Nota sobre el Bordillo:** Para que sea estructuralmente efectivo, el bordillo debe ser **integral** (vaciado monolíticamente con la losa) o estar **anclado con barras de amarre**. Si solo es un bordillo sobrepuesto, no aporta soporte lateral.")
                     
                     st.info(f"Valor J seleccionado: **{j_val}**")
-        
-                # El valor 'j_val' queda listo para el cálculo final
 
         st.subheader("💧 Coeficiente de Drenaje (Cd)")
         # --- TABLA DE DRENAJE  ---
@@ -417,6 +415,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
