@@ -252,7 +252,8 @@ with tab2:
                 st.session_state['k_res'] = k_val
                 st.session_state['w18_res'] = w18_total
                 st.session_state['conf_res'] = conf
-    
+                st.session_state['tiene_dovelas'] = tiene_dovelas  # Guarda si elegiste Sí o No
+                st.session_state['tiene_soporte'] = tiene_soporte  # Guarda si hay bordillo
                 # Mostramos el resultado priorizando cm
                 st.success(f"### Espesor de Losa Recomendado: {esp_final_cm:.1f} cm")
                 st.info(f"*(Valor exacto calculado por AASHTO: {esp_exacto_cm:.2f} cm)*")
@@ -325,12 +326,14 @@ with tab3:
         st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para ver el acero.")
     else:
         D = st.session_state['esp_final_cm']
-        
+        # Leemos del session_state para que no de NameError
+        st_dovelas = st.session_state.get('tiene_dovelas', "No")
+        st_soporte = st.session_state.get('tiene_soporte', "No")
         # --- LÓGICA DE DOVELAS (PASADORES) ---
         # Solo se calculan si el usuario marcó "Sí" en la pestaña anterior
         # (Asumiendo que guardaste 'tiene_dovelas' en session_state o lo lees del radio button)
         
-        if tiene_dovelas == "No":
+        if st_dovelas == "No":
             dov_info = "🚫 No se requieren (Diseño por trabazón de agregados o espesor mínimo)."
         else:
             if D < 15:
@@ -348,7 +351,7 @@ with tab3:
         # Caso A: Amarre Losa-Losa (si hay juntas longitudinales)
         # Caso B: Amarre Losa-Bordillo (si el soporte lateral es 'Sí')
         
-        if tiene_soporte == "No" and num_juntas_long == 0:
+        if st_soporte == "No" and num_juntas_long == 0:
             ama_info = "🚫 No se requieren barras de amarre (Losa única sin bordillo anclado)."
         else:
             tipo_amarre = "Losa-Bordillo" if num_juntas_long == 0 else "Losa-Losa / Losa-Bordillo"
@@ -465,6 +468,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
