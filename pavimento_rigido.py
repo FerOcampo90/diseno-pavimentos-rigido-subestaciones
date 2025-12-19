@@ -7,37 +7,49 @@ import pandas as pd
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Diseño Pavimento Rigido - Subestaciones - AASHTO '93", page_icon="🏗️", layout="wide")
 
-# ==========================================
-# --- 1. FUNCIONES TÉCNICAS (MATEMÁTICAS) ---
-# ==========================================
-
+# --- FUNCIONES TÉCNICAS ---
 def calcular_w18(tpd, periodo, crecimiento, peso_eje):
-    """Calcula el tránsito acumulado (ESALs)"""
     p_patron = 8.2  # Ton (18 kips)
     alfa = 4.0
     fe = (peso_eje / p_patron)**alfa
     r = crecimiento / 100
     f_crec = periodo * 365 if r == 0 else ((1 + r)**periodo - 1) / r * 365
     return fe, tpd * fe * f_crec
-
+    
 def calcular_k_combinado(k_subrasante, espesor_base_cm, tipo_material):
-    """Estima el k combinado (Losa sobre base) según aproximaciones AASHTO/PCA."""
+    """
+    Estima el k combinado (Losa sobre base) según AASHTO/PCA.
+    k_subrasante: pci
+    espesor_base_cm: cm
+    tipo_material: 'Granular' o 'Tratada con Cemento'
+    """
+    # Conversión a pulgadas para fórmulas empíricas
     h_pulg = espesor_base_cm / 2.54
-    if h_pulg < 3: return k_subrasante 
+    
+    # Límites lógicos para evitar valores irreales en la extrapolación
+    if h_pulg < 3: return k_subrasante # Menos de 7.5cm no aporta mucho estructuralmente
     
     if tipo_material == "Base Granular (Zahorra)":
+        # Aproximación logarítmica del ábaco de bases granulares
+        # Incremento moderado
         factor = 1 + (0.15 * np.log(h_pulg))
         k_nuevo = k_subrasante * factor
+        
     elif tipo_material == "Suelo Cemento / Estabilizada":
+        # Aproximación para bases tratadas (aumentan mucho la rigidez)
+        # El incremento es mucho más agresivo
         factor = 1 + (0.35 * np.log(h_pulg))
+        
+        # Las bases tratadas suelen tener un 'tope' efectivo de aporte a la losa
         k_nuevo = k_subrasante * factor * 1.25 
+        
     else:
         k_nuevo = k_subrasante
 
+    # Tope máximo recomendado (valores k > 500-600 pci actúan como losa rígida)
     return min(k_nuevo, 800.0)
-
+    
 def calcular_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k):
-    """Resuelve la ecuación diferencial de AASHTO 93"""
     d_psi = p0 - pt
     def ecuacion(D):
         if D <= 0: return 1e10
@@ -56,22 +68,20 @@ def calcular_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k):
         if ier == 1 and sol[0] > 0: return sol[0]
     return None
 
-# ==========================================
-# --- 2. INTERFAZ DE USUARIO (UI) ---
-# ==========================================
-
+# --- INTERFAZ ---
 st.title("🏗️ Diseñador Pavimento Rigido - Subestaciones")
 
+# Visualización de todas las fórmulas de diseño
 with st.expander("📝 Ecuaciones de Diseño (AASHTO 93 & Correlaciones)"):
     st.markdown("**1. Ecuación Estructural AASHTO 93 (Rígido):**")
     st.latex(r" \log_{10}(W_{18}) = Z_R S_0 + 7.35 \log_{10}(D + 1) - 0.06 + \frac{\log_{10}[\Delta PSI / (4.5 - 1.5)]}{1 + \frac{1.624 \times 10^7}{(D + 1)^{8.46}}} + (4.22 - 0.32p_t) \log_{10} \left[ \frac{S'_c C_d (D^{0.75} - 1.132)}{215.63 J \left( D^{0.75} - \frac{18.42}{(E_c/k)^{0.25}} \right)} \right] ")
+    
     st.markdown("**2. Correlación de Módulo de Reacción (k) vs CBR:**")
     st.latex(r" \text{Si } CBR \leq 10\%: \quad k = 25.5 + 52.5 \log_{10}(CBR) ")
     st.latex(r" \text{Si } CBR > 10\%: \quad k = 46.0 + 9.08 (\log_{10}(CBR))^{4.34} ")
 
-tab1, tab2, tab3, tab4 = st.tabs(["🚛 Tránsito y Carga", "🧱 Parámetros de Diseño", "📐 Geometría y Acero", "📊 Ábaco Sensibilidad"])
+tab1, tab2, tab3, tab4 = st.tabs(["🚛 Tránsito y Carga", "🧱 Parámetros de Diseño", "📐 Geometría y Juntas", "📊 Ábaco"])
 
-# --- TAB 1: TRÁNSITO ---
 with tab1:
     st.header("Análisis de Tránsito (Eje Crítico)")
     c1, c2 = st.columns(2)
@@ -87,9 +97,8 @@ with tab1:
     st.metric("W18 Acumulado (ESALs)", f"{w18_total:,.0f}")
     
     if w18_total < 200000:
-        st.warning("⚠️ **Nota Técnica:** El tránsito acumulado es bajo. El diseño estará gobernado por espesores mínimos constructivos.")
+        st.warning("⚠️ **Nota Técnica:** El tránsito acumulado es bajo para el rango de aplicación original de AASHTO 93. El espesor obtenido está gobernado por criterios mínimos constructivos.")
 
-# --- TAB 2: PARÁMETROS AASHTO ---
 with tab2:
     st.header("Configuración AASHTO '93")
     col1, col2 = st.columns(2)
@@ -118,6 +127,7 @@ with tab2:
         pt = st.slider("Serviciabilidad Final (Pt)", 2.0, 3.0, 2.5)
 
         st.subheader("🧱 Propiedades del Concreto")
+        # 1. Definición del Factor k (Correlación para S'c)
         k_modo = st.radio("Definición del factor k (S'c = k * √f'c):", 
                           ["Valores Recomendados (Memoria)", "Ingreso Manual"], horizontal=True)
         
@@ -127,16 +137,23 @@ with tab2:
                                       "Zonas Industriales (k=10.1)", 
                                       "Urbanos Secundarios (k=9.4)",
                                       "Subestaciones / Estándar (k=8.0)"])
-            map_k = {"Autopistas/Carreteras (k=10.8)": 10.8, "Zonas Industriales (k=10.1)": 10.1, "Urbanos Secundarios (k=9.4)": 9.4, "Subestaciones / Estándar (k=8.0)": 8.0}
+            
+            map_k = {
+                "Autopistas/Carreteras (k=10.8)": 10.8, 
+                "Zonas Industriales (k=10.1)": 10.1,
+                "Urbanos Secundarios (k=9.4)": 9.4,
+                "Subestaciones / Estándar (k=8.0)": 8.0
+            }
             k_final = map_k[tipo_pav]
         else:
             k_final = st.number_input("Ingrese valor de k personalizado:", 7.0, 12.0, 8.0, step=0.1)
-        
+        # 2. Resistencia a la Compresión
         fc_kg = st.selectbox("Resistencia f'c (kg/cm²)", [210, 245, 280, 315, 350], index=2)
         fc_psi = fc_kg * 14.2233
+        # 3. Cálculos Finales
         sc = k_final * np.sqrt(fc_psi)
         ec = 57000 * np.sqrt(fc_psi)
-        
+        # 4. Visualización de Resultados
         st.success(f"**Módulo de Ruptura (S'c):** {sc:.2f} psi")
         st.info(f"**Módulo de Elasticidad (Ec):** {ec:,.0f} psi")
         
@@ -147,100 +164,150 @@ with tab2:
             Ec = 57000 × √f'c (psi)</small>
         </div>
         """, unsafe_allow_html=True)
-
     with col2:
         st.subheader("🌍 Soporte del Suelo (Sistema Multicapa)")
         
+        # --- SECCIÓN 1: SUELO NATURAL ---
         st.markdown("#### 1. Subrasante Natural")
-        metodo_k = st.radio("Método para definir k natural:",
-                            ["Correlación AASHTO (CBR)", "Ensayo de Placa de Carga (Manual)"], horizontal=True)
+        
+        # Selector de método para k
+        metodo_k = st.radio(
+            "Método para definir k natural:",
+            ["Correlación AASHTO (CBR)", "Ensayo de Placa de Carga (Manual)"],
+            horizontal=True
+        )
         
         if metodo_k == "Correlación AASHTO (CBR)":
-            cbr = st.number_input("CBR de la Subrasante (%)", 1.0, 100.0, 3.0, step=0.5, help="Soporte suelo natural")
-            if cbr <= 10: k_natural = 25.5 + 52.5 * np.log10(cbr)
-            else: k_natural = 46.0 + 9.08 * (np.log10(cbr))**4.34
+            cbr = st.number_input("CBR de la Subrasante (%)", 1.0, 100.0, 3.0, step=0.5, help="Valor de soporte del suelo natural")
+            
+            # Fórmulas de correlación técnica
+            if cbr <= 10:
+                k_natural = 25.5 + 52.5 * np.log10(cbr)
+            else:
+                k_natural = 46.0 + 9.08 * (np.log10(cbr))**4.34
+            
             st.caption(f"Valor k natural calculado: **{k_natural:.1f} pci**")
             
+            # --- NOTAS RECUPERADAS ---
             st.warning("⚠️ **Aviso Técnico:** La correlación CBR–k es una aproximación teórica. Se recomienda validar con **placa de carga**.")
+            
             with st.expander("📝 Ver justificación metodológica"):
                 st.info("""
                 **Criterio de Diseño:** Se utiliza la correlación matemática CBR–k expresada en pci para mantener la coherencia con el modelo empírico de la AASHTO '93. 
                 
                 Gráficos referenciales (como la Fig. 1 de la norma) suelen sobreestimar la capacidad de soporte en subrasantes naturales al no considerar el confinamiento real de la losa. Para un diseño estructural seguro, se prioriza la consistencia con el *AASHTO Road Test*.
                 """)
+            # --------------------------
+        
         else:
+            # Opción manual (Ensayo de Placa)
             col_k1, col_k2 = st.columns(2)
-            with col_k1: k_manual_mpa = st.number_input("k del Ensayo (MPa/m)", 10.0, 150.0, 40.0)
+            with col_k1:
+                k_manual_mpa = st.number_input("k del Ensayo (MPa/m)", 10.0, 150.0, 40.0)
             with col_k2:
                 k_natural = k_manual_mpa * 3.684
                 st.metric("k Natural (pci)", f"{k_natural:.1f}")
+            
             st.success("✅ Usando valor real de ensayo de placa.")
 
+        # --- SECCIÓN 2: MEJORAMIENTO / SUB-BASE ---
         st.divider()
         st.markdown("#### 2. Mejoramiento / Sub-base")
+        st.caption("El uso de una base incrementa el valor de reacción (k combinado).")
+        
         usar_base = st.checkbox("¿Incluir capa de Base/Mejoramiento?", value=True)
         
         if usar_base:
             c_b1, c_b2 = st.columns(2)
-            with c_b1: tipo_base = st.selectbox("Material de Base:", ["Base Granular (Zahorra)", "Suelo Cemento / Estabilizada"])
-            with c_b2: esp_base = st.number_input("Espesor Base (cm):", 10.0, 60.0, 15.0, step=5.0)
+            with c_b1:
+                tipo_base = st.selectbox("Material de Base:", ["Base Granular (Zahorra)", "Suelo Cemento / Estabilizada"])
+            with c_b2:
+                esp_base = st.number_input("Espesor Base (cm):", 10.0, 60.0, 15.0, step=5.0)
             
+            # Calculamos el k combinado usando la función nueva
             k_diseno = calcular_k_combinado(k_natural, esp_base, tipo_base)
+            
+            # Cálculo del porcentaje de mejora para mostrarlo visualmente
             mejora_pct = ((k_diseno - k_natural) / k_natural) * 100
             
             st.metric("Módulo k Combinado (Diseño)", f"{k_diseno:.1f} pci", delta=f"+{mejora_pct:.0f}% Incremento")
+            
             if tipo_base == "Suelo Cemento / Estabilizada" and esp_base < 15:
                 st.warning("⚠️ Recomendación: Para bases estabilizadas use espesores ≥ 15 cm.")
+                
         else:
+            # Si no hay base, el k de diseño es el natural
             k_diseno = k_natural
             st.metric("Módulo k de Diseño", f"{k_diseno:.1f} pci")
-            st.info("Diseño directo sobre subrasante natural.")
+            st.info("Diseño directo sobre subrasante natural (No recomendado para cargas altas).")
 
-        k_val = k_diseno 
-
+        # Asignamos la variable final 'k_val' que usa el resto del programa
+        k_val = k_diseno
         st.subheader("🔗 Transferencia de Carga (J)")
+        
         j_manual = st.toggle("Ingresar J manualmente", False)
 
         if j_manual:
             j_val = st.number_input("Valor J personalizado", 2.0, 5.0, 3.2, step=0.1)
             st.info(f"Valor J manual activo: **{j_val}**")
-            tiene_dovelas = "No" 
-            tiene_soporte = "No" 
+            tiene_dovelas = "No"  # Valor por defecto seguro
+            tiene_soporte = "No"  # Valor por defecto seguro
         else:
             escenarios_j = {
                 "Escenario 1: Con Dovelas y con Bermas/Bordillo (J: 2.7)": {
                     "valor": 2.7,
-                    "sustento": "Ideal. Las dovelas transfieren carga y el bordillo da soporte lateral.",
-                    "nota_bordillo": True, "dovelas": "Sí", "soporte": "Sí"
+                    "sustento": "Es el escenario ideal. Las dovelas (pasajuntas) transfieren hasta el 50% de la carga. Las bermas o bordillos integrales evitan que el neumático circule por el borde libre, reduciendo el agrietamiento.",
+                    "nota_bordillo": True,
+                    "dovelas": "Sí",
+                    "soporte": "Sí"
                 },
                 "Escenario 2: Con Dovelas y Sin Bermas/Bordillo (J: 3.2)": {
                     "valor": 3.2,
-                    "sustento": "Estándar AASHTO. Dovelas presentes, pero sin soporte lateral.",
-                    "nota_bordillo": False, "dovelas": "Sí", "soporte": "No"
+                    "sustento": "Valor estándar AASHTO '93. Excelente transferencia de carga por dovelas, pero sin soporte lateral. Las cargas en el borde generan mayores tensiones.",
+                    "nota_bordillo": False,
+                    "dovelas": "Sí",
+                    "soporte": "No"
                 },
                 "Escenario 3: Sin Dovelas pero Con Bordillo/Berma (J: 3.8)": {
                     "valor": 3.8,
-                    "sustento": "Trabazón agregados + Soporte Lateral.",
-                    "nota_bordillo": True, "dovelas": "No", "soporte": "Sí"
+                    "sustento": "Transferencia por trabazón de agregados (interlock). El bordillo/berma ayuda a que el esfuerzo en el borde no sea crítico.",
+                    "nota_bordillo": True,
+                    "dovelas": "No",
+                    "soporte": "Sí"
                 },
                 "Escenario 4: Sin Dovelas y Sin Bermas (J: 4.2)": {
                     "valor": 4.2,
-                    "sustento": "Crítico. Sin dovelas + Borde Libre.",
-                    "nota_bordillo": False, "dovelas": "No", "soporte": "No"
+                    "sustento": "Caso crítico. Sin dovelas la junta es propensa al escalonamiento y sin bermas el camión circula por el borde libre sin apoyo lateral.",
+                    "nota_bordillo": False,
+                    "dovelas": "No",
+                    "soporte": "No"
                 }
             }
+
             seleccion = st.radio("Seleccione escenario:", list(escenarios_j.keys()))
             datos_esc = escenarios_j[seleccion]
             j_val = datos_esc["valor"]
+            # --- CORRECCIÓN: Definir las variables aquí ---
             tiene_dovelas = datos_esc["dovelas"]
             tiene_soporte = datos_esc["soporte"]
-
             st.write(f"**Sustento:** {datos_esc['sustento']}")
+
             if datos_esc["nota_bordillo"]:
-                st.warning("⚠️ **Nota:** El bordillo debe ser integral o anclado.")
+                st.warning("⚠️ **Nota sobre el Bordillo:** Para ser efectivo, debe ser integral (vaciado monolítico) o anclado con barras de amarre. Si es sobrepuesto, no aporta soporte lateral.")
+
             st.info(f"Valor J: **{j_val}**")
 
         st.subheader("💧 Coeficiente de Drenaje (Cd)")
+        # --- TABLA DE DRENAJE  ---
+        tabla_cd = pd.DataFrame({
+            "Calidad de Drenaje": ["Excelente", "Bueno", "Regular", "Pobre", "Muy Pobre"],
+            "Agua removida en": ["2 horas", "1 día", "1 semana", "1 mes", "Nunca"],
+            "<1% de exposición": [1.25, 1.15, 1.05, 0.95, 0.80],
+            "1-5% de exposición": [1.20, 1.10, 1.00, 0.90, 0.75],
+            "5-25% de exposición": [1.15, 1.05, 0.95, 0.80, 0.65],
+            ">25% de exposición": [1.10, 1.00, 0.80, 0.70, 0.55]
+        })
+        st.table(tabla_cd)
         cd_val = st.number_input("Valor Cd Seleccionado", 0.50, 1.30, 1.00, step=0.01)
 
     st.divider()
@@ -252,6 +319,7 @@ with tab2:
             esp_comercial_cm = np.ceil(esp_exacto_cm) 
             esp_final_cm = max(esp_comercial_cm, 15.0)
             
+            # Guardamos variables en Session State
             st.session_state['esp_final_cm'] = esp_final_cm
             st.session_state['esp_pulg_base'] = esp_pulg
             st.session_state['ec_res'] = ec
@@ -261,29 +329,23 @@ with tab2:
             st.session_state['tiene_dovelas'] = tiene_dovelas
             st.session_state['tiene_soporte'] = tiene_soporte
             
+            # --- NUEVO: GUARDAR CONFIGURACIÓN DE SUB-BASE ---
             st.session_state['usar_base'] = usar_base
             if usar_base:
                 st.session_state['tipo_base_guardado'] = tipo_base
                 st.session_state['esp_base_guardado'] = esp_base
-            else:
-                 st.session_state['tipo_base_guardado'] = ""
-                 st.session_state['esp_base_guardado'] = 0
-
+            # ------------------------------------------------
+            
             st.success(f"### Espesor de Losa Recomendado: {esp_final_cm:.1f} cm")
             st.info(f"*(Valor exacto AASHTO: {esp_exacto_cm:.2f} cm | k diseño: {k_val:.1f} pci)*")
-
-# --- TAB 3: GEOMETRÍA Y ACERO ---
 with tab3:
-    st.header("📐 Geometría y Acero de Refuerzo")
+    st.header("📐 Recomendaciones Geométricas")
     
+    # Cambiamos la validación al nuevo nombre de variable
     if 'esp_final_cm' not in st.session_state:
-        st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' primero.")
+        st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para habilitar esta sección.")
     else:
-        D = st.session_state['esp_final_cm']
-        st_dovelas = st.session_state.get('tiene_dovelas', "No")
-        st_soporte = st.session_state.get('tiene_soporte', "No")
-
-        st.warning("⚠️ **Tránsito Excéntrico:** En subestaciones, considerar bordes engrosados +25% en perímetros.")
+        st.warning("⚠️ **Tránsito Excéntrico:** En subestaciones, el tránsito suele circular cerca del borde. Se recomienda considerar bordes engrosados +25% del espesor en perímetros.")
         
         col_g1, col_g2 = st.columns(2)
         with col_g1:
@@ -291,79 +353,147 @@ with tab3:
             num_juntas_long = 1 if ancho_carril > 4.5 else 0
             ancho_losa = ancho_carril / (num_juntas_long + 1)
             st.metric("Ancho de Losa Efectivo (B)", f"{ancho_losa:.2f} m")
-            es_doble_losa = (num_juntas_long > 0)
         
         with col_g2:
+            # Recuperamos el espesor en pulgadas original para la fórmula del radio de rigidez (l)
+            # La fórmula técnica del radio de rigidez RELATIVA (ℓ) requiere unidades en pulgadas
             esp_pulg_calculo = st.session_state['esp_pulg_base']
             nu = 0.15 
+            
+            # Radio de rigidez relativa (ℓ) en pulgadas
             l_pulg = ((st.session_state['ec_res'] * (esp_pulg_calculo**3)) / (12 * (1 - nu**2) * st.session_state['k_res']))**0.25
+            
+            # Límite de rigidez (21 veces l) convertido a metros
             limit_rigidez = (21 * l_pulg) * 0.0254
+            
+            # Largo sugerido (L) redondeado a múltiplos de 0.5m
             largo_sug = round((min(ancho_losa * 1.25, limit_rigidez, 5.0)) * 2) / 2
             st.metric("Largo Sugerido de Losa (L)", f"{largo_sug} m")
+            st.write("📌 **Corte de juntas:** Aserrado temprano (4–12 h después del vaciado).")
 
         st.divider()
+        st.subheader("🔍 Verificaciones Técnicas")
         c_v1, c_v2 = st.columns(2)
         with c_v1:
             relacion_lb = largo_sug / ancho_losa
-            st.write(f"**Relación L/B:** {relacion_lb:.2f}")
-            if relacion_lb <= 1.25: st.success("✅ Ideal (≤ 1.25)")
-            elif relacion_lb <= 1.5: st.warning("⚠️ Aceptable (1.25 - 1.50)")
-            else: st.error("🚨 Crítica (> 1.50)")
-        
+            st.write(f"**1. Relación de Aspecto (L/B):** {relacion_lb:.2f}")
+            if relacion_lb <= 1.25: st.success("✅ Relación ideal (≤ 1.25).")
+            elif relacion_lb <= 1.5: st.warning("⚠️ Relación aceptable (1.25 - 1.50).")
+            else: st.error("🚨 Relación crítica (> 1.50).")
+
         with c_v2:
-            st.write(f"**Límite Rigidez (21ℓ):** {limit_rigidez:.2f} m")
-            if largo_sug <= limit_rigidez: st.success("✅ Cumple límite rigidez")
-            else: st.error("🚨 Excede límite rigidez")
+            st.write(f"**2. Radio de Rigidez Relativa (ℓ):** {l_pulg:.2f} pulg")
+            st.write(f"**3. Espaciamiento Máximo (21ℓ):** {limit_rigidez:.2f} m")
+            if largo_sug <= limit_rigidez: st.success("✅ Cumple límite de rigidez.")
+            else: st.error("🚨 Excede límite de rigidez.")
 
         st.divider()
-        st.subheader("🔩 Diseño de Acero (Dovelas y Amarre)")
+        st.subheader("📝 Resumen de Memoria Técnica")
+        resumen_texto = f"""
+        El pavimento rígido fue diseñado para un tránsito acumulado de {st.session_state['w18_res']:,.0f} ESALs, 
+        con una confiabilidad del {st.session_state['conf_res']}%. 
+        
+        **Espesor Adoptado:** {st.session_state['esp_final_cm']:.1f} cm. 
+        La modulación propuesta ({ancho_losa:.2f} m x {largo_sug:.2f} m) cumple criterios técnicos de rigidez. 
+        """
+        st.info(resumen_texto)
 
-        # 1. CÁLCULO DOVELAS
+    st.markdown("---")
+    st.markdown("<p style='color: gray; font-size: 0.8em;'>Nota: El ancho de carril define la geometría constructiva; no es una variable de entrada estructural en la ecuación de la metodología AASHTO 93.</p>", unsafe_allow_html=True)
+    st.divider()
+    st.subheader("🔩 Diseño de Acero (Dovelas y Amarre)")
+   
+    if 'esp_final_cm' not in st.session_state:
+        st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para ver el acero.")
+    else:
+        D = st.session_state['esp_final_cm']
+        
+        # Recuperamos variables del Escenario (Tab 2)
+        st_dovelas = st.session_state.get('tiene_dovelas', "No")
+        st_soporte = st.session_state.get('tiene_soporte', "No")
+        
+        # Recuperamos la Geometría actual calculada arriba en este mismo Tab 3
+        # Si num_juntas_long es 1, significa que hay 2 losas (Junta central).
+        # Si num_juntas_long es 0, es una sola losa ancha.
+        es_doble_losa = (num_juntas_long > 0)
+
+        # ------------------------------------------
+        # 1. CÁLCULO DE PASADORES (DOVELAS)
+        # ------------------------------------------
         if st_dovelas == "No":
             dov_info = "🚫 No requiere (Según escenario seleccionado: Sin Dovelas)."
             dov_check = False
         else:
+            # Si el escenario TIENE dovelas, calculamos dimensiones
             dov_check = True
-            if D < 15: dov_info = "Espesor < 15cm: No requiere."
-            elif D < 20: dov_info = "Ø 3/4\" (19mm) | Largo: 40 cm | Sep: 30 cm"
-            elif D < 25: dov_info = "Ø 1\" (25mm) | Largo: 45 cm | Sep: 30 cm"
-            elif D < 30: dov_info = "Ø 1 1/4\" (32mm) | Largo: 50 cm | Sep: 30 cm"
-            else: dov_info = "Ø 1 1/2\" (38mm) | Largo: 50 cm | Sep: 30 cm"
+            if D < 15:
+                dov_info = "Espesor muy bajo (<15cm) para dovelas estándar."
+            elif D < 20:
+                dov_info = "Ø 3/4\" (19mm) | Largo: 40 cm | Separación: 30 cm"
+            elif D < 25:
+                dov_info = "Ø 1\" (25mm) | Largo: 45 cm | Separación: 30 cm"
+            elif D < 30:
+                dov_info = "Ø 1 1/4\" (32mm) | Largo: 50 cm | Separación: 30 cm"
+            else:
+                dov_info = "Ø 1 1/2\" (38mm) | Largo: 50 cm | Separación: 30 cm"
 
-        # 2. CÁLCULO AMARRES
-        if D < 20: specs_amarre = "Ø 1/2\" (12mm) | Largo: 60 cm | Sep: 75 cm"
-        elif D < 25: specs_amarre = "Ø 1/2\" (12mm) | Largo: 70 cm | Sep: 65 cm"
-        else: specs_amarre = "Ø 5/8\" (16mm) | Largo: 80 cm | Sep: 60 cm"
+        # ------------------------------------------
+        # 2. CÁLCULO DE BARRAS DE AMARRE
+        # ------------------------------------------
+        # Definimos las especificaciones técnicas según espesor primero
+        if D < 20:
+            specs_amarre = "Ø 1/2\" (12mm) | Largo: 60 cm | Sep: 75 cm"
+        elif D < 25:
+            specs_amarre = "Ø 1/2\" (12mm) | Largo: 70 cm | Sep: 65 cm"
+        else:
+            specs_amarre = "Ø 5/8\" (16mm) | Largo: 80 cm | Sep: 60 cm"
 
+        # Determinamos QUÉ tipo de amarre mostrar según tu lógica
         lista_amarres = []
-        if es_doble_losa: lista_amarres.append("Entre Losas (Central)")
-        if st_soporte == "Sí": lista_amarres.append("Losa-Bordillo (Borde)")
+        
+        # A. Amarre entre losas (Longitudinal central)
+        if es_doble_losa:
+            lista_amarres.append("Entre Losas (Central)")
+        
+        # B. Amarre con Bordillo (Borde)
+        if st_soporte == "Sí":
+            lista_amarres.append("Losa-Bordillo (Borde)")
 
+        # Generamos el texto final
         if not lista_amarres:
             ama_info = "🚫 No requiere acero de amarre."
-            ama_nota = "Caso: Una sola losa sin bordillo anclado."
+            ama_nota = "Caso: Una sola losa de ancho completo y sin bordillo anclado (Escenario sin soporte)."
             ama_check = False
         else:
             ubicacion = " + ".join(lista_amarres)
             ama_info = f"**Ubicación:** {ubicacion}\n\n**Acero:** {specs_amarre}"
-            ama_nota = "Barras corrugadas grado 60."
+            ama_nota = "Barras corrugadas de acero grado 60."
             ama_check = True
 
+        # ------------------------------------------
+        # VISUALIZACIÓN
+        # ------------------------------------------
         col_a1, col_a2 = st.columns(2)
+        
         with col_a1:
             st.markdown("#### 🚀 Pasadores (Dovelas)")
-            if dov_check: st.success(dov_info)
-            else: st.info(dov_info)
+            st.caption("Transferencia de carga en juntas transversales")
+            if dov_check:
+                st.success(dov_info)
+            else:
+                st.info(dov_info)
+        
         with col_a2:
             st.markdown("#### 🔗 Barras de Amarre")
-            if ama_check: 
+            st.caption("Anclaje en juntas longitudinales")
+            if ama_check:
                 st.success(ama_info)
                 st.caption(f"📝 {ama_nota}")
-            else: st.info(f"{ama_info}\n\n*{ama_nota}*")
-
-# --- TAB 4: ÁBACO ---
+            else:
+                st.info(f"{ama_info}\n\n*{ama_nota}*")
 with tab4:
     st.header("📊 Ábaco de Sensibilidad: Espesor vs CBR")
+    
     st.markdown("""
     ### ¿Qué es el ábaco de diseño?
     Permite evaluar la sensibilidad del espesor frente a variaciones del **CBR del suelo natural**.
@@ -385,23 +515,33 @@ with tab4:
         fuera_de_rango = False
         alerta_detectada = False
 
+        # Recuperar configuración de la base
         usa_base_sim = st.session_state.get('usar_base', False)
         tipo_base_sim = st.session_state.get('tipo_base_guardado', "")
         esp_base_sim = st.session_state.get('esp_base_guardado', 0)
 
         for c_val in rango_cbr:
-            if c_val <= 10: k_nat_iter = 25.5 + 52.5 * np.log10(c_val)
-            else: k_nat_iter = 46.0 + 9.08 * (np.log10(c_val))**4.34
+            # 1. k Natural
+            if c_val <= 10:
+                k_nat_iter = 25.5 + 52.5 * np.log10(c_val)
+            else:
+                k_nat_iter = 46.0 + 9.08 * (np.log10(c_val))**4.34
             
-            if usa_base_sim: ki_final = calcular_k_combinado(k_nat_iter, esp_base_sim, tipo_base_sim)
-            else: ki_final = k_nat_iter
+            # 2. k Mejorado con Sub-base
+            if usa_base_sim:
+                ki_final = calcular_k_combinado(k_nat_iter, esp_base_sim, tipo_base_sim)
+            else:
+                ki_final = k_nat_iter
 
+            # 3. Espesor
             esp_pulg = calcular_espesor_aashto(
                 st.session_state['w18_res'], zr, s0, p0, pt, sc, cd_val, j_val, st.session_state['ec_res'], ki_final
             )
 
             if esp_pulg:
                 esp_cm = esp_pulg * 2.54
+                k_mpa = ki_final / 3.684 
+                
                 row = {
                     "CBR Suelo (%)": f"{c_val:.1f}%",
                     "k Comb. (pci)": round(ki_final, 1),
@@ -429,6 +569,7 @@ with tab4:
             st.subheader("📋 Tabla de Sensibilidad (Considerando Estructura de Base)")
             st.table(df.drop(columns=["Espesor Numérico"]))
             
+            # --- NOTAS DE ADVERTENCIA RECUPERADAS ---
             if alerta_detectada:
                 st.warning("""
                 🚨 **ALERTA DE OPTIMIZACIÓN TÉCNICA (Espesor > 23 cm):**
@@ -455,3 +596,38 @@ with tab4:
             chart_data = df.set_index("CBR Suelo (%)")[["Espesor Numérico"]]
             chart_data.columns = ["Espesor Calculado (cm)"]
             st.line_chart(chart_data)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
