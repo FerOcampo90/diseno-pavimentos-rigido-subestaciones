@@ -496,7 +496,8 @@ with tab4:
     
     st.markdown("""
     ### ¿Qué es el ábaco de diseño?
-    Permite evaluar la sensibilidad del espesor frente a variaciones del **CBR**, manteniendo constante el tránsito. 
+    Permite evaluar la sensibilidad del espesor frente a variaciones del **CBR del suelo natural**.
+    *Nota: Si configuraste una Sub-base en la pestaña anterior, el cálculo considera el aporte estructural de esa capa sobre cada CBR evaluado.*
     *El límite máximo de diseño recomendado para subestaciones es de **25 cm**.*
     """)
 
@@ -512,25 +513,38 @@ with tab4:
         rango_cbr = np.arange(cbr_ini, cbr_fin + cbr_inc, cbr_inc)
         datos_abaco = []
         fuera_de_rango = False
-        alerta_detectada = False # Inicialización para evitar Error
+        alerta_detectada = False
+
+        # Recuperar configuración de la base
+        usa_base_sim = st.session_state.get('usar_base', False)
+        tipo_base_sim = st.session_state.get('tipo_base_guardado', "")
+        esp_base_sim = st.session_state.get('esp_base_guardado', 0)
 
         for c_val in rango_cbr:
-            # Cálculo de k (pci)
-            ki = 25.5 + 52.5 * np.log10(c_val) if c_val <= 10 else 46.0 + 9.08 * (np.log10(c_val))**4.34
+            # 1. k Natural
+            if c_val <= 10:
+                k_nat_iter = 25.5 + 52.5 * np.log10(c_val)
+            else:
+                k_nat_iter = 46.0 + 9.08 * (np.log10(c_val))**4.34
             
+            # 2. k Mejorado con Sub-base
+            if usa_base_sim:
+                ki_final = calcular_k_combinado(k_nat_iter, esp_base_sim, tipo_base_sim)
+            else:
+                ki_final = k_nat_iter
+
+            # 3. Espesor
             esp_pulg = calcular_espesor_aashto(
-                st.session_state['w18_res'], zr, s0, p0, pt, sc, cd_val, j_val, st.session_state['ec_res'], ki
+                st.session_state['w18_res'], zr, s0, p0, pt, sc, cd_val, j_val, st.session_state['ec_res'], ki_final
             )
 
             if esp_pulg:
                 esp_cm = esp_pulg * 2.54
-                k_mpa = ki / 3.684 # Conversión para tu memoria
+                k_mpa = ki_final / 3.684 
                 
-                # Guardamos siempre el valor numérico para el gráfico
                 row = {
-                    "CBR (%)": f"{c_val:.1f}%",
-                    "k (pci)": round(ki, 1),
-                    "k (MPa/m)": round(k_mpa, 1),
+                    "CBR Suelo (%)": f"{c_val:.1f}%",
+                    "k Comb. (pci)": round(ki_final, 1),
                     "Espesor Numérico": round(esp_cm, 2)
                 }
 
@@ -545,43 +559,44 @@ with tab4:
                 else:
                     fuera_de_rango = True
                     row["Espesor Calc. (cm)"] = f"Excede ({round(esp_cm,1)})"
-                    row["Espesor Adoptado (cm)"] = "Excede 25cm"
+                    row["Espesor Adoptado (cm)"] = "> 25cm"
                     row["Estado"] = "🚨 Crítico"
                 
                 datos_abaco.append(row)
         
         if datos_abaco:
-                    df = pd.DataFrame(datos_abaco)
-                    st.subheader("📋 Tabla de Sensibilidad CBR vs Espesor")
-                    st.table(df.drop(columns=["Espesor Numérico"]))
-                    
-                    # --- LA NOTA DE ADVERTENCIA  ---
-                    if alerta_detectada:
-                        st.warning("""
-                        🚨 **ALERTA DE OPTIMIZACIÓN TÉCNICA (Espesor > 23 cm):**
-                        Para espesores superiores a 23-25 cm, la metodología AASHTO indica que el diseño se vuelve poco eficiente. 
-                        
-                        **Recomendaciones antes de aumentar el espesor:**
-                        1. **Mejorar la Sub-base:** En lugar de una losa más gruesa, considere una sub-base tratada con cemento para elevar el valor de 'k'.
-                        2. **Revisar Transferencia de Carga:** Verifique si el uso de dovelas de mayor diámetro puede optimizar el coeficiente 'J'.
-                        3. **Resistencia del Concreto:** Evalúe subir el f'c a 280 o 315 kg/cm² para mejorar el Módulo de Ruptura (S'c).
-                        """)
-                    
-                    if fuera_de_rango:
-                                st.error("⚠️ **LÍMITE EXCEDIDO:** El espesor calculado supera los 25 cm.")
-                                st.warning("""
-                                **🔍 Recomendaciones de Optimización:**
-                                Cuando el espesor calculado resulta tan elevado (ej. > 25 cm), la AASHTO '93 sugiere que el diseño debe optimizarse mediante:
-                                
-                                1. **Mejorar el Valor k:** No diseñe sobre la subrasante natural. Considere una sub-base granular o estabilizada con cemento para alcanzar valores de $k$ cercanos a 250 pci (70 MPa/m).
-                                2. **Incrementar Resistencia (f'c):** Use un concreto de mayor desempeño (f'c 280 o 315 kg/cm²) para elevar el Módulo de Ruptura ($S'_c$).
-                                3. **Verificar Tránsito:** Revise si el número de repeticiones del eje pesado es realista para una subestación.
-                                """)
-                    # --- GRÁFICO ---
-                    st.subheader("📈 Curva de Sensibilidad del Espesor")
-                    chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
-                    chart_data.columns = ["Espesor Calculado (cm)"]
-                    st.line_chart(chart_data)                        
+            df = pd.DataFrame(datos_abaco)
+            st.subheader("📋 Tabla de Sensibilidad (Considerando Estructura de Base)")
+            st.table(df.drop(columns=["Espesor Numérico"]))
+            
+            # --- NOTAS DE ADVERTENCIA RECUPERADAS ---
+            if alerta_detectada:
+                st.warning("""
+                🚨 **ALERTA DE OPTIMIZACIÓN TÉCNICA (Espesor > 23 cm):**
+                Para espesores superiores a 23-25 cm, la metodología AASHTO indica que el diseño se vuelve poco eficiente. 
+                
+                **Recomendaciones antes de aumentar el espesor:**
+                1. **Mejorar la Sub-base:** En lugar de una losa más gruesa, considere una sub-base tratada con cemento para elevar el valor de 'k'.
+                2. **Revisar Transferencia de Carga:** Verifique si el uso de dovelas de mayor diámetro puede optimizar el coeficiente 'J'.
+                3. **Resistencia del Concreto:** Evalúe subir el f'c a 280 o 315 kg/cm² para mejorar el Módulo de Ruptura (S'c).
+                """)
+            
+            if fuera_de_rango:
+                st.error("⚠️ **LÍMITE EXCEDIDO:** El espesor calculado supera los 25 cm.")
+                st.warning("""
+                **🔍 Recomendaciones de Optimización:**
+                Cuando el espesor calculado resulta tan elevado (ej. > 25 cm), la AASHTO '93 sugiere que el diseño debe optimizarse mediante:
+                
+                1. **Mejorar el Valor k:** No diseñe sobre la subrasante natural. Considere una sub-base granular o estabilizada con cemento para alcanzar valores de k cercanos a 250 pci.
+                2. **Incrementar Resistencia (f'c):** Use un concreto de mayor desempeño (f'c 280 o 315 kg/cm²).
+                3. **Verificar Tránsito:** Revise si el número de repeticiones del eje pesado es realista para una subestación.
+                """)
+
+            st.subheader("📈 Curva de Sensibilidad del Espesor")
+            chart_data = df.set_index("CBR Suelo (%)")[["Espesor Numérico"]]
+            chart_data.columns = ["Espesor Calculado (cm)"]
+            st.line_chart(chart_data)     
+
 
 
 
