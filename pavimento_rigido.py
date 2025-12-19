@@ -184,22 +184,22 @@ with tab2:
             st.info(f"Valor J manual activo: **{j_val}**")
         else:
             escenarios_j = {
-                "Escenario 1: Con Dovelas Y con Bermas/Bordillo (J: 2.7)": {
+                "Escenario 1: Con Dovelas y con Bermas/Bordillo (J: 2.7)": {
                     "valor": 2.7,
                     "sustento": "Es el escenario ideal. Las dovelas (pasajuntas) transfieren hasta el 50% de la carga. Las bermas o bordillos integrales evitan que el neumático circule por el borde libre, reduciendo el agrietamiento.",
                     "nota_bordillo": True
                 },
-                "Escenario 2: Con Dovelas y SIN Bermas/Bordillo (J: 3.2)": {
+                "Escenario 2: Con Dovelas y Sin Bermas/Bordillo (J: 3.2)": {
                     "valor": 3.2,
                     "sustento": "Valor estándar AASHTO '93. Excelente transferencia de carga por dovelas, pero sin soporte lateral. Las cargas en el borde generan mayores tensiones.",
                     "nota_bordillo": False
                 },
-                "Escenario 3: SIN Dovelas pero CON Bordillo/Berma (J: 3.8)": {
+                "Escenario 3: Sin Dovelas pero Con Bordillo/Berma (J: 3.8)": {
                     "valor": 3.8,
                     "sustento": "Transferencia por trabazón de agregados (interlock). El bordillo/berma ayuda a que el esfuerzo en el borde no sea crítico.",
                     "nota_bordillo": True
                 },
-                "Escenario 4: SIN Dovelas y SIN Bermas (J: 4.2)": {
+                "Escenario 4: Sin Dovelas y Sin Bermas (J: 4.2)": {
                     "valor": 4.2,
                     "sustento": "Caso crítico. Sin dovelas la junta es propensa al escalonamiento y sin bermas el camión circula por el borde libre sin apoyo lateral.",
                     "nota_bordillo": False
@@ -410,6 +410,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
