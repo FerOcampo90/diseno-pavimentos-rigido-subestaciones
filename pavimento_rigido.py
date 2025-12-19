@@ -298,46 +298,74 @@ with tab2:
             st.info(f"Valor J: **{j_val}**")
 
         st.subheader("💧 Coeficiente de Drenaje (Cd)")
-        # --- TABLA DE DRENAJE  ---
-        tabla_cd = pd.DataFrame({
-            "Calidad de Drenaje": ["Excelente", "Bueno", "Regular", "Pobre", "Muy Pobre"],
-            "Agua removida en": ["2 horas", "1 día", "1 semana", "1 mes", "Nunca"],
-            "<1% de exposición": [1.25, 1.15, 1.05, 0.95, 0.80],
-            "1-5% de exposición": [1.20, 1.10, 1.00, 0.90, 0.75],
-            "5-25% de exposición": [1.15, 1.05, 0.95, 0.80, 0.65],
-            ">25% de exposición": [1.10, 1.00, 0.80, 0.70, 0.55]
-        })
-        st.table(tabla_cd)
-        cd_val = st.number_input("Valor Cd Seleccionado", 0.50, 1.30, 1.00, step=0.01)
-
-    st.divider()
-    if st.button("🚀 CALCULAR ESTRUCTURA"):
-        esp_pulg = calcular_espesor_aashto(w18_total, zr, s0, p0, pt, sc, cd_val, j_val, ec, k_val)
         
-        if esp_pulg:
-            esp_exacto_cm = esp_pulg * 2.54
-            esp_comercial_cm = np.ceil(esp_exacto_cm) 
-            esp_final_cm = max(esp_comercial_cm, 15.0)
+        st.markdown("Responda las siguientes preguntas para estimar el valor Cd:")
+        
+        col_d1, col_d2 = st.columns(2)
+        
+        with col_d1:
+            st.markdown("**1. Velocidad de Drenaje:**")
+            st.caption("Si el pavimento se inunda, ¿qué tan rápido desaparece el agua?")
+            calidad_input = st.selectbox("Seleccione velocidad:", [
+                "Excelente (2 horas)",
+                "Bueno (1 día)",
+                "Regular (1 semana)",
+                "Pobre (1 mes)",
+                "Muy Pobre (Nunca)"
+            ])
             
-            # Guardamos variables en Session State
-            st.session_state['esp_final_cm'] = esp_final_cm
-            st.session_state['esp_pulg_base'] = esp_pulg
-            st.session_state['ec_res'] = ec
-            st.session_state['k_res'] = k_val
-            st.session_state['w18_res'] = w18_total
-            st.session_state['conf_res'] = conf
-            st.session_state['tiene_dovelas'] = tiene_dovelas
-            st.session_state['tiene_soporte'] = tiene_soporte
+            # Convertimos texto a índice (0 a 4)
+            mapa_calidad = {
+                "Excelente (2 horas)": 0,
+                "Bueno (1 día)": 1,
+                "Regular (1 semana)": 2,
+                "Pobre (1 mes)": 3,
+                "Muy Pobre (Nunca)": 4
+            }
+            idx_calidad = mapa_calidad[calidad_input]
+
+        with col_d2:
+            st.markdown("**2. Clima y Saturación:**")
+            st.caption("¿Con qué frecuencia llueve o el suelo está saturado de agua?")
+            exposicion_input = st.selectbox("Seleccione condición climática:", [
+                "Seco / Árido (< 1% del tiempo)",
+                "Moderado / Estándar (1% - 5% del tiempo)",
+                "Húmedo / Lluvioso (5% - 25% del tiempo)",
+                "Saturación Constante (> 25% del tiempo)"
+            ])
             
-            # --- NUEVO: GUARDAR CONFIGURACIÓN DE SUB-BASE ---
-            st.session_state['usar_base'] = usar_base
-            if usar_base:
-                st.session_state['tipo_base_guardado'] = tipo_base
-                st.session_state['esp_base_guardado'] = esp_base
-            # ------------------------------------------------
-            
-            st.success(f"### Espesor de Losa Recomendado: {esp_final_cm:.1f} cm")
-            st.info(f"*(Valor exacto AASHTO: {esp_exacto_cm:.2f} cm | k diseño: {k_val:.1f} pci)*")
+            # Convertimos texto a índice (0 a 3)
+            mapa_exposicion = {
+                "Seco / Árido (< 1% del tiempo)": 0,
+                "Moderado / Estándar (1% - 5% del tiempo)": 1,
+                "Húmedo / Lluvioso (5% - 25% del tiempo)": 2,
+                "Saturación Constante (> 25% del tiempo)": 3
+            }
+            idx_exposicion = mapa_exposicion[exposicion_input]
+
+        # Matriz de valores AASHTO (Filas: Calidad, Columnas: Exposición)
+        matriz_cd = [
+            [1.25, 1.20, 1.15, 1.10], # Excelente
+            [1.15, 1.10, 1.00, 1.00], # Bueno
+            [1.05, 1.00, 0.95, 0.80], # Regular
+            [0.95, 0.90, 0.80, 0.70], # Pobre
+            [0.80, 0.75, 0.65, 0.55]  # Muy Pobre
+        ]
+        
+        # Obtenemos el valor recomendado automáticamente
+        cd_recomendado = matriz_cd[idx_calidad][idx_exposicion]
+        
+        st.write("---")
+        # Permitimos que el usuario lo edite si quiere, pero por defecto ponemos el calculado
+        cd_val = st.number_input(f"Valor Cd Recomendado: {cd_recomendado}", 0.50, 1.40, cd_recomendado, step=0.01)
+        
+        # Mensajes de feedback visual
+        if cd_val < 1.0:
+            st.error(f"📉 Drenaje Lento (Cd={cd_val}). El agua atrapada debilitará la base, requiriendo mayor espesor de concreto.")
+        elif cd_val > 1.0:
+            st.success(f"📈 Buen Drenaje (Cd={cd_val}). El agua fluye rápido, permitiendo optimizar el espesor.")
+        else:
+            st.info("Drenaje Estándar (Cd = 1.0).")
 with tab3:
     st.header("📐 Recomendaciones Geométricas")
     
@@ -596,6 +624,7 @@ with tab4:
             chart_data = df.set_index("CBR Suelo (%)")[["Espesor Numérico"]]
             chart_data.columns = ["Espesor Calculado (cm)"]
             st.line_chart(chart_data)
+
 
 
 
