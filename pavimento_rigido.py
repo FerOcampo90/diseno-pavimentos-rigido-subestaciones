@@ -182,6 +182,8 @@ with tab2:
         if j_manual:
             j_val = st.number_input("Valor J personalizado", 2.0, 5.0, 3.2, step=0.1)
             st.info(f"Valor J manual activo: **{j_val}**")
+            tiene_dovelas = "No"  # Valor por defecto seguro
+            tiene_soporte = "No"  # Valor por defecto seguro
         else:
             escenarios_j = {
                 "Escenario 1: Con Dovelas y con Bermas/Bordillo (J: 2.7)": {
@@ -331,23 +333,32 @@ with tab3:
     st.markdown("<p style='color: gray; font-size: 0.8em;'>Nota: El ancho de carril define la geometría constructiva; no es una variable de entrada estructural en la ecuación de la metodología AASHTO 93.</p>", unsafe_allow_html=True)
     st.divider()
     st.subheader("🔩 Diseño de Acero (Dovelas y Amarre)")
-    
+   
     if 'esp_final_cm' not in st.session_state:
         st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para ver el acero.")
     else:
         D = st.session_state['esp_final_cm']
-        # Leemos del session_state para que no de NameError
+        
+        # Recuperamos variables del Escenario (Tab 2)
         st_dovelas = st.session_state.get('tiene_dovelas', "No")
         st_soporte = st.session_state.get('tiene_soporte', "No")
-        # --- LÓGICA DE DOVELAS (PASADORES) ---
-        # Solo se calculan si el usuario marcó "Sí" en la pestaña anterior
-        # (Asumiendo que guardaste 'tiene_dovelas' en session_state o lo lees del radio button)
         
+        # Recuperamos la Geometría actual calculada arriba en este mismo Tab 3
+        # Si num_juntas_long es 1, significa que hay 2 losas (Junta central).
+        # Si num_juntas_long es 0, es una sola losa ancha.
+        es_doble_losa = (num_juntas_long > 0)
+
+        # ------------------------------------------
+        # 1. CÁLCULO DE PASADORES (DOVELAS)
+        # ------------------------------------------
         if st_dovelas == "No":
-            dov_info = "🚫 No se requieren (Diseño por trabazón de agregados o espesor mínimo)."
+            dov_info = "🚫 No requiere (Según escenario seleccionado: Sin Dovelas)."
+            dov_check = False
         else:
+            # Si el escenario TIENE dovelas, calculamos dimensiones
+            dov_check = True
             if D < 15:
-                dov_info = "No se requieren pasadores para espesores < 15 cm."
+                dov_info = "Espesor muy bajo (<15cm) para dovelas estándar."
             elif D < 20:
                 dov_info = "Ø 3/4\" (19mm) | Largo: 40 cm | Separación: 30 cm"
             elif D < 25:
@@ -356,37 +367,61 @@ with tab3:
                 dov_info = "Ø 1 1/4\" (32mm) | Largo: 50 cm | Separación: 30 cm"
             else:
                 dov_info = "Ø 1 1/2\" (38mm) | Largo: 50 cm | Separación: 30 cm"
-    
-        # --- LÓGICA DE BARRAS DE AMARRE ---
-        # Caso A: Amarre Losa-Losa (si hay juntas longitudinales)
-        # Caso B: Amarre Losa-Bordillo (si el soporte lateral es 'Sí')
-        
-        if st_soporte == "No" and num_juntas_long == 0:
-            ama_info = "🚫 No se requieren barras de amarre (Losa única sin bordillo anclado)."
+
+        # ------------------------------------------
+        # 2. CÁLCULO DE BARRAS DE AMARRE
+        # ------------------------------------------
+        # Definimos las especificaciones técnicas según espesor primero
+        if D < 20:
+            specs_amarre = "Ø 1/2\" (12mm) | Largo: 60 cm | Sep: 75 cm"
+        elif D < 25:
+            specs_amarre = "Ø 1/2\" (12mm) | Largo: 70 cm | Sep: 65 cm"
         else:
-            tipo_amarre = "Losa-Bordillo" if num_juntas_long == 0 else "Losa-Losa / Losa-Bordillo"
-            if D < 20:
-                ama_info = f"{tipo_amarre}: Ø 1/2\" | Largo: 60 cm | Sep: 75 cm"
-            elif D < 25:
-                ama_info = f"{tipo_amarre}: Ø 1/2\" | Largo: 70 cm | Sep: 65 cm"
-            else:
-                ama_info = f"{tipo_amarre}: Ø 5/8\" | Largo: 80 cm | Sep: 60 cm"
-    
+            specs_amarre = "Ø 5/8\" (16mm) | Largo: 80 cm | Sep: 60 cm"
+
+        # Determinamos QUÉ tipo de amarre mostrar según tu lógica
+        lista_amarres = []
+        
+        # A. Amarre entre losas (Longitudinal central)
+        if es_doble_losa:
+            lista_amarres.append("Entre Losas (Central)")
+        
+        # B. Amarre con Bordillo (Borde)
+        if st_soporte == "Sí":
+            lista_amarres.append("Losa-Bordillo (Borde)")
+
+        # Generamos el texto final
+        if not lista_amarres:
+            ama_info = "🚫 No requiere acero de amarre."
+            ama_nota = "Caso: Una sola losa de ancho completo y sin bordillo anclado (Escenario sin soporte)."
+            ama_check = False
+        else:
+            ubicacion = " + ".join(lista_amarres)
+            ama_info = f"**Ubicación:** {ubicacion}\n\n**Acero:** {specs_amarre}"
+            ama_nota = "Barras corrugadas de acero grado 60."
+            ama_check = True
+
+        # ------------------------------------------
+        # VISUALIZACIÓN
+        # ------------------------------------------
         col_a1, col_a2 = st.columns(2)
         
         with col_a1:
-            st.write("🚀 **Pasadores (Dovelas)**")
-            st.success(dov_info)
+            st.markdown("#### 🚀 Pasadores (Dovelas)")
+            st.caption("Transferencia de carga en juntas transversales")
+            if dov_check:
+                st.success(dov_info)
+            else:
+                st.info(dov_info)
         
         with col_a2:
-            st.write("🔗 **Barras de Amarre / Anclaje**")
-            st.success(ama_info)
-             
-    
-        st.info(f"""
-        📌 **Nota sobre Amarres:** - Si seleccionaste 'Soporte Lateral', estas barras son las que **anclan el bordillo a la losa** para que trabaje estructuralmente.
-        - Si es una sola losa sin bordillo, no necesitas acero de amarre.
-        """)
+            st.markdown("#### 🔗 Barras de Amarre")
+            st.caption("Anclaje en juntas longitudinales")
+            if ama_check:
+                st.success(ama_info)
+                st.caption(f"📝 {ama_nota}")
+            else:
+                st.info(f"{ama_info}\n\n*{ama_nota}*")
 with tab4:
     st.header("📊 Ábaco de Sensibilidad: Espesor vs CBR")
     
@@ -478,6 +513,7 @@ with tab4:
                     chart_data = df.set_index("CBR (%)")[["Espesor Numérico"]]
                     chart_data.columns = ["Espesor Calculado (cm)"]
                     st.line_chart(chart_data)                        
+
 
 
 
