@@ -125,7 +125,18 @@ with tab2:
 
         p0 = st.slider("Serviciabilidad Inicial (P0)", 4.0, 5.0, 4.5)
         pt = st.slider("Serviciabilidad Final (Pt)", 2.0, 3.0, 2.5)
-
+        # =========================================================
+        # 👇 AGREGAR AQUÍ LA SECCIÓN DE TEMPERATURA
+        # =========================================================
+        st.subheader("🌡️ Oscilación Térmica del Sitio")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            temp_max = st.number_input("Temp. Máxima Día (°C)", -10.0, 50.0, 32.0, step=1.0)
+        with col_t2:
+            temp_min = st.number_input("Temp. Mínima Noche (°C)", -20.0, 35.0, 12.0, step=1.0)
+        delta_t = temp_max - temp_min
+        st.caption(f"Oscilación Térmica: **ΔT = {delta_t:.1f} °C**")
+        # =========================================================
         st.subheader("🧱 Propiedades del Concreto")
         # 1. Definición del Factor k (Correlación para S'c)
         k_modo = st.radio("Definición del factor k (S'c = k * √f'c):", 
@@ -385,7 +396,14 @@ with tab2:
             st.session_state['conf_res'] = conf
             st.session_state['tiene_dovelas'] = tiene_dovelas
             st.session_state['tiene_soporte'] = tiene_soporte
-            
+            st.session_state['fc_kg_val'] = fc_kg
+            st.session_state['sc_psi_val'] = sc
+            st.session_state['cbr_input'] = cbr if metodo_k == "Correlación AASHTO (CBR)" else "Suelo Natural"          
+            st.session_state['delta_t'] = delta_t
+            st.session_state['temp_max'] = temp_max
+            st.session_state['temp_min'] = temp_min
+            st.session_state['periodo_diseno'] = periodo
+            # =======================================
             # --- NUEVO: GUARDAR CONFIGURACIÓN DE SUB-BASE ---
             st.session_state['usar_base'] = usar_base
             if usar_base:
@@ -400,13 +418,34 @@ with tab2:
             st.info(f"*(Valor exacto AASHTO: {esp_exacto_cm:.2f} cm | k diseño: {k_val:.1f} pci)*")
 
 with tab3:
-    st.header("📐 Recomendaciones Geométricas")
+    st.header("📐 Recomendaciones Geométricas y Modulación")
     
-    # Cambiamos la validación al nuevo nombre de variable
     if 'esp_final_cm' not in st.session_state:
         st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para habilitar esta sección.")
     else:
         st.warning("⚠️ **Tránsito Excéntrico:** En subestaciones, el tránsito suele circular cerca del borde. Se recomienda considerar bordes engrosados +25% del espesor en perímetros.")
+        
+        esp_cm_actual = st.session_state['esp_final_cm']
+        dt_sitio = st.session_state.get('delta_t', 20.0)
+        
+        # 1. Determinación del límite térmico según ΔT
+        if dt_sitio > 20.0:
+            factor_lh = 20.0  # Desierto / Sierra
+            msj_clima = f"Alta Oscilación (ΔT={dt_sitio:.1f}°C) → Límite L/h ≤ 20"
+        elif dt_sitio > 12.0:
+            factor_lh = 22.0  # Templado
+            msj_clima = f"Oscilación Moderada (ΔT={dt_sitio:.1f}°C) → Límite L/h ≤ 22"
+        else:
+            factor_lh = 24.0  # Costa estable
+            msj_clima = f"Oscilación Baja (ΔT={dt_sitio:.1f}°C) → Límite L/h ≤ 24"
+            
+        limit_termico = (factor_lh * esp_cm_actual) / 100.0  # en metros
+
+        # 2. Radio de rigidez relativa (21ℓ en metros)
+        esp_pulg_calculo = st.session_state['esp_pulg_base']
+        nu = 0.15 
+        l_pulg = ((st.session_state['ec_res'] * (esp_pulg_calculo**3)) / (12 * (1 - nu**2) * st.session_state['k_res']))**0.25
+        limit_rigidez = (21 * l_pulg) * 0.0254  # metros
         
         col_g1, col_g2 = st.columns(2)
         with col_g1:
@@ -416,142 +455,138 @@ with tab3:
             st.metric("Ancho de Losa Efectivo (B)", f"{ancho_losa:.2f} m")
         
         with col_g2:
-            # Recuperamos el espesor en pulgadas original para la fórmula del radio de rigidez (l)
-            # La fórmula técnica del radio de rigidez RELATIVA (ℓ) requiere unidades en pulgadas
-            esp_pulg_calculo = st.session_state['esp_pulg_base']
-            nu = 0.15 
-            
-            # Radio de rigidez relativa (ℓ) en pulgadas
-            l_pulg = ((st.session_state['ec_res'] * (esp_pulg_calculo**3)) / (12 * (1 - nu**2) * st.session_state['k_res']))**0.25
-            
-            # Límite de rigidez (21 veces l) convertido a metros
-            limit_rigidez = (21 * l_pulg) * 0.0254
-            
-            # Largo sugerido (L) redondeado a múltiplos de 0.5m
-            largo_sug = round((min(ancho_losa * 1.25, limit_rigidez, 5.0)) * 2) / 2
-            st.metric("Largo Sugerido de Losa (L)", f"{largo_sug} m")
-            st.write("📌 **Corte de juntas:** Aserrado temprano (4–12 h después del vaciado).")
+            # Cálculo del largo recomendado de partida
+            largo_sug_teorico = min(ancho_losa * 1.25, limit_rigidez, limit_termico, 4.5)
+            largo_sug_teorico = round(largo_sug_teorico * 2) / 2
+            if largo_sug_teorico < 2.5: largo_sug_teorico = 2.5
+
+            # --- ENTRADA MANUAL PARA EL DISEÑADOR ---
+            largo_sug = st.number_input(
+                f"Largo de Losa Adoptado - L (m) [Máx. recomendado: {limit_termico:.2f} m]", 
+                min_value=1.5, 
+                max_value=6.0, 
+                value=float(largo_sug_teorico), 
+                step=0.25,
+                help="Puede ajustar manualmente la longitud de la losa para evitar alertas de alabeo térmico."
+            )
+            st.caption(f"📌 {msj_clima} (L_máx = {limit_termico:.2f} m)")
 
         st.divider()
-        st.subheader("🔍 Verificaciones Técnicas")
-        c_v1, c_v2 = st.columns(2)
+        st.subheader("🔍 Verificaciones Técnicas y Alertas para el Diseñador")
+        c_v1, c_v2, c_v3 = st.columns(3)
+        
         with c_v1:
             relacion_lb = largo_sug / ancho_losa
             st.write(f"**1. Relación de Aspecto (L/B):** {relacion_lb:.2f}")
-            if relacion_lb <= 1.25: st.success("✅ Relación ideal (≤ 1.25).")
-            elif relacion_lb <= 1.5: st.warning("⚠️ Relación aceptable (1.25 - 1.50).")
-            else: st.error("🚨 Relación crítica (> 1.50).")
+            if relacion_lb <= 1.25: st.success("✅ Relación ideal (≤ 1.25)")
+            elif relacion_lb <= 1.5: st.warning("⚠️ Relación aceptable (1.25 - 1.50)")
+            else: st.error("🚨 Relación crítica (> 1.50). Reducir largo L.")
 
         with c_v2:
-            st.write(f"**2. Radio de Rigidez Relativa (ℓ):** {l_pulg:.2f} pulg")
-            st.write(f"**3. Espaciamiento Máximo (21ℓ):** {limit_rigidez:.2f} m")
-            if largo_sug <= limit_rigidez: st.success("✅ Cumple límite de rigidez.")
+            relacion_lh = (largo_sug * 100) / esp_cm_actual
+            st.write(f"**2. Relación Esbeltez (L/h):** {relacion_lh:.1f}")
+            if relacion_lh <= factor_lh: 
+                st.success(f"✅ Control de alabeo OK (≤ {factor_lh:.0f})")
+            else: 
+                st.error(f"🚨 **ALERTA DE ALABEO:** L/h ({relacion_lh:.1f}) excede el límite ({factor_lh:.0f}). **Baje manualmente el largo a L ≤ {limit_termico:.2f} m**.")
+
+        with c_v3:
+            st.write(f"**3. Rigidez Relativa (21ℓ):** {limit_rigidez:.2f} m")
+            if largo_sug <= limit_rigidez: st.success("✅ Cumple límite de rigidez")
             else: st.error("🚨 Excede límite de rigidez.")
 
         st.divider()
-        st.subheader("📝 Resumen de Memoria Técnica")
-        resumen_texto = f"""
-        El pavimento rígido fue diseñado para un tránsito acumulado de {st.session_state['w18_res']:,.0f} ESALs, 
-        con una confiabilidad del {st.session_state['conf_res']}%. 
+        st.subheader("🔩 Diseño de Acero (Dovelas y Amarre)")
         
-        **Espesor Adoptado:** {st.session_state['esp_final_cm']:.1f} cm. 
-        La modulación propuesta ({ancho_losa:.2f} m x {largo_sug:.2f} m) cumple criterios técnicos de rigidez. 
-        """
-        st.info(resumen_texto)
-
-    st.markdown("---")
-    st.markdown("<p style='color: gray; font-size: 0.8em;'>Nota: El ancho de carril define la geometría constructiva; no es una variable de entrada estructural en la ecuación de la metodología AASHTO 93.</p>", unsafe_allow_html=True)
-    st.divider()
-    st.subheader("🔩 Diseño de Acero (Dovelas y Amarre)")
-   
-    if 'esp_final_cm' not in st.session_state:
-        st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para ver el acero.")
-    else:
         D = st.session_state['esp_final_cm']
-        
-        # Recuperamos variables del Escenario (Tab 2)
         st_dovelas = st.session_state.get('tiene_dovelas', "No")
         st_soporte = st.session_state.get('tiene_soporte', "No")
-        
-        # Recuperamos la Geometría actual calculada arriba en este mismo Tab 3
-        # Si num_juntas_long es 1, significa que hay 2 losas (Junta central).
-        # Si num_juntas_long es 0, es una sola losa ancha.
         es_doble_losa = (num_juntas_long > 0)
 
-        # ------------------------------------------
-        # 1. CÁLCULO DE PASADORES (DOVELAS)
-        # ------------------------------------------
+        # Pasadores (Dovelas)
         if st_dovelas == "No":
-            dov_info = "🚫 No requiere (Según escenario seleccionado: Sin Dovelas)."
+            dov_info = "SIN DOVELAS (TRABAZÓN DE AGREGADOS)"
             dov_check = False
         else:
-            # Si el escenario TIENE dovelas, calculamos dimensiones
             dov_check = True
-            if D < 15:
-                dov_info = "Espesor muy bajo (<15cm) para dovelas estándar."
-            elif D < 20:
-                dov_info = "Ø 3/4\" (19mm) | Largo: 40 cm | Separación: 30 cm"
-            elif D < 25:
-                dov_info = "Ø 1\" (25mm) | Largo: 45 cm | Separación: 30 cm"
-            elif D < 30:
-                dov_info = "Ø 1 1/4\" (32mm) | Largo: 50 cm | Separación: 30 cm"
-            else:
-                dov_info = "Ø 1 1/2\" (38mm) | Largo: 50 cm | Separación: 30 cm"
+            if D < 15: dov_info = "Espesor <15cm (Revisar dovelas)"
+            elif D < 20: dov_info = "Ø 3/4\" (19mm) | Largo: 40 cm @ 0.30 m"
+            elif D < 25: dov_info = "Ø 1\" (25mm) | Largo: 45 cm @ 0.30 m"
+            elif D < 30: dov_info = "Ø 1 1/4\" (32mm) | Largo: 50 cm @ 0.30 m"
+            else: dov_info = "Ø 1 1/2\" (38mm) | Largo: 50 cm @ 0.30 m"
 
-        # ------------------------------------------
-        # 2. CÁLCULO DE BARRAS DE AMARRE
-        # ------------------------------------------
-        # Definimos las especificaciones técnicas según espesor primero
-        if D < 20:
-            specs_amarre = "Ø 1/2\" (12mm) | Largo: 60 cm | Sep: 75 cm"
-        elif D < 25:
-            specs_amarre = "Ø 1/2\" (12mm) | Largo: 70 cm | Sep: 65 cm"
-        else:
-            specs_amarre = "Ø 5/8\" (16mm) | Largo: 80 cm | Sep: 60 cm"
+        # Barras de Amarre
+        if D < 20: specs_amarre = "Ø 1/2\" (12mm) | Largo: 60 cm @ 0.75 m"
+        elif D < 25: specs_amarre = "Ø 1/2\" (12mm) | Largo: 70 cm @ 0.65 m"
+        else: specs_amarre = "Ø 5/8\" (16mm) | Largo: 80 cm @ 0.60 m"
 
-        # Determinamos QUÉ tipo de amarre mostrar según tu lógica
         lista_amarres = []
-        
-        # A. Amarre entre losas (Longitudinal central)
-        if es_doble_losa:
-            lista_amarres.append("Entre Losas (Central)")
-        
-        # B. Amarre con Bordillo (Borde)
-        if st_soporte == "Sí":
-            lista_amarres.append("Losa-Bordillo (Borde)")
+        if es_doble_losa: lista_amarres.append("Entre Losas (Junta Central)")
+        if st_soporte == "Sí": lista_amarres.append("Losa-Bordillo (Borde)")
 
-        # Generamos el texto final
         if not lista_amarres:
-            ama_info = "🚫 No requiere acero de amarre."
-            ama_nota = "Caso: Una sola losa de ancho completo y sin bordillo anclado (Escenario sin soporte)."
+            ama_info = "NO REQUIERE BARRAS DE AMARRE"
             ama_check = False
         else:
             ubicacion = " + ".join(lista_amarres)
-            ama_info = f"**Ubicación:** {ubicacion}\n\n**Acero:** {specs_amarre}"
-            ama_nota = "Barras corrugadas de acero grado 60."
+            ama_info = f"Ubicación: {ubicacion} | Acero: {specs_amarre}"
             ama_check = True
 
-        # ------------------------------------------
-        # VISUALIZACIÓN
-        # ------------------------------------------
         col_a1, col_a2 = st.columns(2)
-        
         with col_a1:
             st.markdown("#### 🚀 Pasadores (Dovelas)")
-            st.caption("Transferencia de carga en juntas transversales")
-            if dov_check:
-                st.success(dov_info)
-            else:
-                st.info(dov_info)
+            st.caption("Transferencia de carga transversal")
+            if dov_check: st.success(dov_info)
+            else: st.info(dov_info)
         
         with col_a2:
             st.markdown("#### 🔗 Barras de Amarre")
-            st.caption("Anclaje en juntas longitudinales")
-            if ama_check:
-                st.success(ama_info)
-                st.caption(f"📝 {ama_nota}")
-            else:
-                st.info(f"{ama_info}\n\n*{ama_nota}*")
+            st.caption("Anclaje junta longitudinal")
+            if ama_check: st.success(ama_info)
+            else: st.info(ama_info)
+
+        # ESPECIFICACIONES FINALES PARA AUTOCAD (USAN EL 'largo_sug' ADOPTADO POR EL USUARIO)
+        st.divider()
+        with st.expander("📋 ESPECIFICACIONES TÉCNICAS Y NOTAS PARA PLANO (AutoCAD)", expanded=True):
+            
+            p_diseno = st.session_state.get('periodo_diseno', 25)
+            w18_esals = st.session_state.get('w18_res', 0)
+            cbr_str = st.session_state.get('cbr_input', 'N/A')
+            k_comb = st.session_state.get('k_res', 0)
+            fc_val = st.session_state.get('fc_kg_val', 350)
+            sc_val = st.session_state.get('sc_psi_val', 0)
+            usa_base = st.session_state.get('usar_base', False)
+            tipo_base_txt = st.session_state.get('tipo_base_guardado', 'Base Granular')
+            esp_base_txt = st.session_state.get('esp_base_guardado', 15)
+
+            cbr_linea = f"CBR SUBRASANTE = {cbr_str}%" if isinstance(cbr_str, (int, float)) else f"SUELO NATURAL ({cbr_str})"
+            base_linea = f"SUB-BASE DE {esp_base_txt} cm DE {tipo_base_txt.upper()}" if usa_base else "DIRECTO SOBRE SUBRASANTE COMPACTADA"
+
+            texto_planos = f"""
+ESPECIFICACIONES TÉCNICAS Y NOTAS DE PAVIMENTO RÍGIDO:
+
+1. PARÁMETROS BASE DE DISEÑO (METODOLOGÍA AASHTO 93):
+   − PERIODO DE DISEÑO: {p_diseno} AÑOS.
+   − TRÁNSITO DE DISEÑO ACUMULADO: {w18_esals:,.0f} ESALs (W18).
+   − RESISTENCIA DEL SUELO: {cbr_linea} (MÓDULO DE REACCIÓN COMBINADO k = {k_comb:.1f} pci).
+   − RESISTENCIA DEL CONCRETO: f'c = {fc_val} kg/cm² ({fc_val/10:.1f} MPa) | MÓDULO DE RUPTURA S'c = {sc_val:.1f} psi.
+
+2. ESTRUCTURA Y GEOMETRÍA DEL PAVIMENTO:
+   − ESPESOR DE LOSA DE CONCRETO ADOPTADO: h = {D:.1f} cm.
+   − CAPA DE SOPORTE ESTRUCTURAL: {base_linea}.
+   − MODULACIÓN DE LOSAS: PAÑOS CUADRADOS/RECTANGULARES DE {ancho_losa:.2f} m x {largo_sug:.2f} m.
+   − REFUERZO PERIMETRAL EN BORDE LIBRE: BORDE ENGROSADO DE h = {D*1.25:.1f} cm (+25%) EN FRANJA DE 0.50 m (EN PERÍMETROS SIN SARDINEL ANCLADO).
+
+3. JUNTAS Y REFUERZO DE ACERO:
+   − JUNTA TRANSVERSAL DE CONTRACCIÓN: PASAJUNTAS (DOVELAS) DE ACERO LISO GRADO 60 {dov_info}. MITAD DE LA BARRA ENGRASADA / ENFUNDADA PARA PERMITIR LIBRE EXPANSIÓN.
+   − JUNTA LONGITUDINAL DE CONSTRUCCIÓN/CENTRAL: BARRAS DE AMARRE CORRUGADAS GRADO 60 ({specs_amarre}) EN {ama_info.upper()}.
+
+4. PROCEDIMIENTO Y CONTROL CONSTRUCTIVO:
+   − COMPACTACIÓN DE CAPAS GRANULARES: DENSIDAD MÍNIMA DEL 98% DEL PROCTOR MODIFICADO.
+   − ASERRADO DE JUNTAS: CORTE TEMPRANO DE JUNTAS ENTRE LAS 4 h Y 12 h POSTERIORES AL VACIADO.
+   − SELLADO DE JUNTAS: CORDÓN DE RESPALDO (BACKER ROD) Y SELLANTE ELASTOMÉRICO DE POLIURETANO.
+"""
+            st.code(texto_planos, language="text")
 with tab4:
     st.header("📊 Ábaco de Sensibilidad: Espesor vs CBR")
     
