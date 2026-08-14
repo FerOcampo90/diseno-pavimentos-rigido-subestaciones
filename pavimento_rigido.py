@@ -23,30 +23,21 @@ def calcular_k_combinado(k_subrasante, espesor_base_cm, tipo_material):
     espesor_base_cm: cm
     tipo_material: 'Granular' o 'Tratada con Cemento'
     """
-    # Conversión a pulgadas para fórmulas empíricas
     h_pulg = espesor_base_cm / 2.54
     
-    # Límites lógicos para evitar valores irreales en la extrapolación
-    if h_pulg < 3: return k_subrasante # Menos de 7.5cm no aporta mucho estructuralmente
+    if h_pulg < 3: return k_subrasante
     
     if tipo_material == "Base Granular (Zahorra)":
-        # Aproximación logarítmica del ábaco de bases granulares
-        # Incremento moderado
         factor = 1 + (0.15 * np.log(h_pulg))
         k_nuevo = k_subrasante * factor
         
     elif tipo_material == "Suelo Cemento / Estabilizada":
-        # Aproximación para bases tratadas (aumentan mucho la rigidez)
-        # El incremento es mucho más agresivo
         factor = 1 + (0.35 * np.log(h_pulg))
-        
-        # Las bases tratadas suelen tener un 'tope' efectivo de aporte a la losa
         k_nuevo = k_subrasante * factor * 1.25 
         
     else:
         k_nuevo = k_subrasante
 
-    # Tope máximo recomendado (valores k > 500-600 pci actúan como losa rígida)
     return min(k_nuevo, 800.0)
     
 def calcular_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k):
@@ -125,20 +116,32 @@ with tab2:
 
         p0 = st.slider("Serviciabilidad Inicial (P0)", 4.0, 5.0, 4.5)
         pt = st.slider("Serviciabilidad Final (Pt)", 2.0, 3.0, 2.5)
+        
         # =========================================================
-        # 👇 AGREGAR AQUÍ LA SECCIÓN DE TEMPERATURA
+        # 🌡️ MÓDULO TÉRMICO Y CLIMÁTICO (EVALUACIÓN DE AMBIENTE Y SITIO)
         # =========================================================
-        st.subheader("🌡️ Oscilación Térmica del Sitio")
+        st.subheader("🌡️ Evaluación Térmica del Sitio")
         col_t1, col_t2 = st.columns(2)
         with col_t1:
             temp_max = st.number_input("Temp. Máxima Día (°C)", -10.0, 50.0, 32.0, step=1.0)
+            t_col = st.number_input("Temperatura de colocación del concreto, Tcol (°C)", -10.0, 50.0, 20.0, step=1.0)
+            cte_val = st.number_input("Coeficiente de expansión térmica CTE (×10⁻⁶/°C)", 5.0, 15.0, 10.0, step=0.1)
         with col_t2:
             temp_min = st.number_input("Temp. Mínima Noche (°C)", -20.0, 35.0, 12.0, step=1.0)
+            gradiente_t = st.number_input("Gradiente térmico estimado ΔTg (°C)", 0.0, 30.0, 8.0, step=0.5)
+
         delta_t = temp_max - temp_min
-        st.caption(f"Oscilación Térmica: **ΔT = {delta_t:.1f} °C**")
+        st.caption(f"Oscilación térmica ambiente: **ΔT = {delta_t:.1f} °C**")
+        st.warning("⚠️ **Aviso:** Valor preliminar. Debe sustentarse con información climática, mediciones, bibliografía aplicable o criterio de ingeniería del proyecto.")
+
+        st.markdown("**Restricciones de Borde / Confinamiento:**")
+        restriccion_borde = st.selectbox(
+            "¿Existen elementos rígidos que restrinjan el movimiento de la losa?",
+            ["Ninguna", "Canaletas", "Bordillos", "Fundaciones", "Pedestales", "Estructuras / elementos rígidos", "Múltiples restricciones"]
+        )
+
         # =========================================================
         st.subheader("🧱 Propiedades del Concreto")
-        # 1. Definición del Factor k (Correlación para S'c)
         k_modo = st.radio("Definición del factor k (S'c = k * √f'c):", 
                           ["Valores Recomendados (Memoria)", "Ingreso Manual"], horizontal=True)
         
@@ -158,13 +161,13 @@ with tab2:
             k_final = map_k[tipo_pav]
         else:
             k_final = st.number_input("Ingrese valor de k personalizado:", 7.0, 12.0, 8.0, step=0.1)
-        # 2. Resistencia a la Compresión
+        
         fc_kg = st.selectbox("Resistencia f'c (kg/cm²)", [210, 245, 280, 315, 350], index=2)
         fc_psi = fc_kg * 14.2233
-        # 3. Cálculos Finales
+        
         sc = k_final * np.sqrt(fc_psi)
         ec = 57000 * np.sqrt(fc_psi)
-        # 4. Visualización de Resultados
+        
         st.success(f"**Módulo de Ruptura (S'c):** {sc:.2f} psi")
         st.info(f"**Módulo de Elasticidad (Ec):** {ec:,.0f} psi")
         
@@ -177,11 +180,8 @@ with tab2:
         """, unsafe_allow_html=True)
     with col2:
         st.subheader("🌍 Soporte del Suelo (Sistema Multicapa)")
-        
-        # --- SECCIÓN 1: SUELO NATURAL ---
         st.markdown("#### 1. Subrasante Natural")
         
-        # Selector de método para k
         metodo_k = st.radio(
             "Método para definir k natural:",
             ["Correlación AASHTO (CBR)", "Ensayo de Placa de Carga (Manual)"],
@@ -191,15 +191,12 @@ with tab2:
         if metodo_k == "Correlación AASHTO (CBR)":
             cbr = st.number_input("CBR de la Subrasante (%)", 1.0, 100.0, 3.0, step=0.5, help="Valor de soporte del suelo natural")
             
-            # Fórmulas de correlación técnica
             if cbr <= 10:
                 k_natural = 25.5 + 52.5 * np.log10(cbr)
             else:
                 k_natural = 46.0 + 9.08 * (np.log10(cbr))**4.34
             
             st.caption(f"Valor k natural calculado: **{k_natural:.1f} pci**")
-            
-            # --- NOTAS RECUPERADAS ---
             st.warning("⚠️ **Aviso Técnico:** La correlación CBR–k es una aproximación teórica. Se recomienda validar con **placa de carga**.")
             
             with st.expander("📝 Ver justificación metodológica"):
@@ -208,10 +205,7 @@ with tab2:
                 
                 Gráficos referenciales (como la Fig. 1 de la norma) suelen sobreestimar la capacidad de soporte en subrasantes naturales al no considerar el confinamiento real de la losa. Para un diseño estructural seguro, se prioriza la consistencia con el *AASHTO Road Test*.
                 """)
-            # --------------------------
-        
         else:
-            # Opción manual (Ensayo de Placa)
             col_k1, col_k2 = st.columns(2)
             with col_k1:
                 k_manual_mpa = st.number_input("k del Ensayo (MPa/m)", 10.0, 150.0, 40.0)
@@ -221,7 +215,6 @@ with tab2:
             
             st.success("✅ Usando valor real de ensayo de placa.")
 
-        # --- SECCIÓN 2: MEJORAMIENTO / SUB-BASE ---
         st.divider()
         st.markdown("#### 2. Mejoramiento / Sub-base")
         st.caption("El uso de una base incrementa el valor de reacción (k combinado).")
@@ -235,10 +228,7 @@ with tab2:
             with c_b2:
                 esp_base = st.number_input("Espesor Base (cm):", 10.0, 60.0, 15.0, step=5.0)
             
-            # Calculamos el k combinado usando la función nueva
             k_diseno = calcular_k_combinado(k_natural, esp_base, tipo_base)
-            
-            # Cálculo del porcentaje de mejora para mostrarlo visualmente
             mejora_pct = ((k_diseno - k_natural) / k_natural) * 100
             
             st.metric("Módulo k Combinado (Diseño)", f"{k_diseno:.1f} pci", delta=f"+{mejora_pct:.0f}% Incremento")
@@ -247,12 +237,10 @@ with tab2:
                 st.warning("⚠️ Recomendación: Para bases estabilizadas use espesores ≥ 15 cm.")
                 
         else:
-            # Si no hay base, el k de diseño es el natural
             k_diseno = k_natural
             st.metric("Módulo k de Diseño", f"{k_diseno:.1f} pci")
             st.info("Diseño directo sobre subrasante natural (No recomendado para cargas altas).")
 
-        # Asignamos la variable final 'k_val' que usa el resto del programa
         k_val = k_diseno
         st.subheader("🔗 Transferencia de Carga (J)")
         
@@ -261,44 +249,35 @@ with tab2:
         if j_manual:
             j_val = st.number_input("Valor J personalizado", 2.0, 5.0, 3.2, step=0.1)
             st.info(f"Valor J manual activo: **{j_val}**")
-            tiene_dovelas = "No"  # Valor por defecto seguro
-            tiene_soporte = "No"  # Valor por defecto seguro
+            tiene_dovelas = "No"
+            tiene_soporte = "No"
         else:
             escenarios_j = {
                 "Escenario 1: Con Dovelas y con Bermas/Bordillo (J: 2.7)": {
                     "valor": 2.7,
                     "sustento": "Es el escenario ideal. Las dovelas (pasajuntas) transfieren hasta el 50% de la carga. Las bermas o bordillos integrales evitan que el neumático circule por el borde libre, reduciendo el agrietamiento.",
-                    "nota_bordillo": True,
-                    "dovelas": "Sí",
-                    "soporte": "Sí"
+                    "nota_bordillo": True, "dovelas": "Sí", "soporte": "Sí"
                 },
                 "Escenario 2: Con Dovelas y Sin Bermas/Bordillo (J: 3.2)": {
                     "valor": 3.2,
                     "sustento": "Valor estándar AASHTO '93. Excelente transferencia de carga por dovelas, pero sin soporte lateral. Las cargas en el borde generan mayores tensiones.",
-                    "nota_bordillo": False,
-                    "dovelas": "Sí",
-                    "soporte": "No"
+                    "nota_bordillo": False, "dovelas": "Sí", "soporte": "No"
                 },
                 "Escenario 3: Sin Dovelas pero Con Bordillo/Berma (J: 3.8)": {
                     "valor": 3.8,
                     "sustento": "Transferencia por trabazón de agregados (interlock). El bordillo/berma ayuda a que el esfuerzo en el borde no sea crítico.",
-                    "nota_bordillo": True,
-                    "dovelas": "No",
-                    "soporte": "Sí"
+                    "nota_bordillo": True, "dovelas": "No", "soporte": "Sí"
                 },
                 "Escenario 4: Sin Dovelas y Sin Bermas (J: 4.2)": {
                     "valor": 4.2,
                     "sustento": "Caso crítico. Sin dovelas la junta es propensa al escalonamiento y sin bermas el camión circula por el borde libre sin apoyo lateral.",
-                    "nota_bordillo": False,
-                    "dovelas": "No",
-                    "soporte": "No"
+                    "nota_bordillo": False, "dovelas": "No", "soporte": "No"
                 }
             }
 
             seleccion = st.radio("Seleccione escenario:", list(escenarios_j.keys()))
             datos_esc = escenarios_j[seleccion]
             j_val = datos_esc["valor"]
-            # --- CORRECCIÓN: Definir las variables aquí ---
             tiene_dovelas = datos_esc["dovelas"]
             tiene_soporte = datos_esc["soporte"]
             st.write(f"**Sustento:** {datos_esc['sustento']}")
@@ -309,29 +288,17 @@ with tab2:
             st.info(f"Valor J: **{j_val}**")
 
         st.subheader("💧 Coeficiente de Drenaje (Cd)")
-        
         st.markdown("Responda las siguientes preguntas para estimar el valor Cd:")
         
         col_d1, col_d2 = st.columns(2)
-        
         with col_d1:
             st.markdown("**1. Velocidad de Drenaje:**")
             st.caption("Si el pavimento se inunda, ¿qué tan rápido desaparece el agua?")
             calidad_input = st.selectbox("Seleccione velocidad:", [
-                "Excelente (2 horas)",
-                "Bueno (1 día)",
-                "Regular (1 semana)",
-                "Pobre (1 mes)",
-                "Muy Pobre (Nunca)"
+                "Excelente (2 horas)", "Bueno (1 día)", "Regular (1 semana)", "Pobre (1 mes)", "Muy Pobre (Nunca)"
             ])
-            
-            # Convertimos texto a índice (0 a 4)
             mapa_calidad = {
-                "Excelente (2 horas)": 0,
-                "Bueno (1 día)": 1,
-                "Regular (1 semana)": 2,
-                "Pobre (1 mes)": 3,
-                "Muy Pobre (Nunca)": 4
+                "Excelente (2 horas)": 0, "Bueno (1 día)": 1, "Regular (1 semana)": 2, "Pobre (1 mes)": 3, "Muy Pobre (Nunca)": 4
             }
             idx_calidad = mapa_calidad[calidad_input]
 
@@ -339,38 +306,28 @@ with tab2:
             st.markdown("**2. Clima y Saturación:**")
             st.caption("¿Con qué frecuencia llueve o el suelo está saturado de agua?")
             exposicion_input = st.selectbox("Seleccione condición climática:", [
-                "Seco / Árido (< 1% del tiempo)",
-                "Moderado / Estándar (1% - 5% del tiempo)",
-                "Húmedo / Lluvioso (5% - 25% del tiempo)",
-                "Saturación Constante (> 25% del tiempo)"
+                "Seco / Árido (< 1% del tiempo)", "Moderado / Estándar (1% - 5% del tiempo)",
+                "Húmedo / Lluvioso (5% - 25% del tiempo)", "Saturación Constante (> 25% del tiempo)"
             ])
-            
-            # Convertimos texto a índice (0 a 3)
             mapa_exposicion = {
-                "Seco / Árido (< 1% del tiempo)": 0,
-                "Moderado / Estándar (1% - 5% del tiempo)": 1,
-                "Húmedo / Lluvioso (5% - 25% del tiempo)": 2,
-                "Saturación Constante (> 25% del tiempo)": 3
+                "Seco / Árido (< 1% del tiempo)": 0, "Moderado / Estándar (1% - 5% del tiempo)": 1,
+                "Húmedo / Lluvioso (5% - 25% del tiempo)": 2, "Saturación Constante (> 25% del tiempo)": 3
             }
             idx_exposicion = mapa_exposicion[exposicion_input]
 
-        # Matriz de valores AASHTO (Filas: Calidad, Columnas: Exposición)
         matriz_cd = [
-            [1.25, 1.20, 1.15, 1.10], # Excelente
-            [1.15, 1.10, 1.00, 1.00], # Bueno
-            [1.05, 1.00, 0.95, 0.80], # Regular
-            [0.95, 0.90, 0.80, 0.70], # Pobre
-            [0.80, 0.75, 0.65, 0.55]  # Muy Pobre
+            [1.25, 1.20, 1.15, 1.10],
+            [1.15, 1.10, 1.00, 1.00],
+            [1.05, 1.00, 0.95, 0.80],
+            [0.95, 0.90, 0.80, 0.70],
+            [0.80, 0.75, 0.65, 0.55]
         ]
         
-        # Obtenemos el valor recomendado automáticamente
         cd_recomendado = matriz_cd[idx_calidad][idx_exposicion]
         
         st.write("---")
-        # Permitimos que el usuario lo edite si quiere, pero por defecto ponemos el calculado
         cd_val = st.number_input(f"Valor Cd Recomendado: {cd_recomendado}", 0.50, 1.40, cd_recomendado, step=0.01)
         
-        # Mensajes de feedback visual
         if cd_val < 1.0:
             st.error(f"📉 Drenaje Lento (Cd={cd_val}). El agua atrapada debilitará la base, requiriendo mayor espesor de concreto.")
         elif cd_val > 1.0:
@@ -387,7 +344,6 @@ with tab2:
             esp_comercial_cm = np.ceil(esp_exacto_cm) 
             esp_final_cm = max(esp_comercial_cm, 15.0)
             
-            # Guardamos variables en Session State
             st.session_state['esp_final_cm'] = esp_final_cm
             st.session_state['esp_pulg_base'] = esp_pulg
             st.session_state['ec_res'] = ec
@@ -403,8 +359,13 @@ with tab2:
             st.session_state['temp_max'] = temp_max
             st.session_state['temp_min'] = temp_min
             st.session_state['periodo_diseno'] = periodo
-            # =======================================
-            # --- NUEVO: GUARDAR CONFIGURACIÓN DE SUB-BASE ---
+            
+            # --- DATOS TÉRMICOS NUEVOS EN SESSION STATE ---
+            st.session_state['t_col'] = t_col
+            st.session_state['cte_val'] = cte_val
+            st.session_state['gradiente_t'] = gradiente_t
+            st.session_state['restriccion_borde'] = restriccion_borde
+            
             st.session_state['usar_base'] = usar_base
             if usar_base:
                 st.session_state['tipo_base_guardado'] = tipo_base
@@ -430,13 +391,13 @@ with tab3:
         
         # 1. Determinación del límite térmico según ΔT
         if dt_sitio > 20.0:
-            factor_lh = 20.0  # Desierto / Sierra
+            factor_lh = 20.0
             msj_clima = f"Alta Oscilación (ΔT={dt_sitio:.1f}°C) → Límite L/h ≤ 20"
         elif dt_sitio > 12.0:
-            factor_lh = 22.0  # Templado
+            factor_lh = 22.0
             msj_clima = f"Oscilación Moderada (ΔT={dt_sitio:.1f}°C) → Límite L/h ≤ 22"
         else:
-            factor_lh = 24.0  # Costa estable
+            factor_lh = 24.0
             msj_clima = f"Oscilación Baja (ΔT={dt_sitio:.1f}°C) → Límite L/h ≤ 24"
             
         limit_termico = (factor_lh * esp_cm_actual) / 100.0  # en metros
@@ -455,12 +416,10 @@ with tab3:
             st.metric("Ancho de Losa Efectivo (B)", f"{ancho_losa:.2f} m")
         
         with col_g2:
-            # Cálculo del largo recomendado de partida
             largo_sug_teorico = min(ancho_losa * 1.25, limit_rigidez, limit_termico, 4.5)
             largo_sug_teorico = round(largo_sug_teorico * 2) / 2
             if largo_sug_teorico < 2.5: largo_sug_teorico = 2.5
 
-            # --- ENTRADA MANUAL PARA EL DISEÑADOR ---
             largo_sug = st.number_input(
                 f"Largo de Losa Adoptado - L (m) [Máx. recomendado: {limit_termico:.2f} m]", 
                 min_value=1.5, 
@@ -484,16 +443,81 @@ with tab3:
 
         with c_v2:
             relacion_lh = (largo_sug * 100) / esp_cm_actual
-            st.write(f"**2. Relación Esbeltez (L/h):** {relacion_lh:.1f}")
+            st.markdown("**2. 🔥 Control preliminar de modulación térmica:**")
+            st.caption("Criterio interno de predimensionamiento térmico. No constituye una verificación mecanicista de curling/warping.")
+            st.write(f"Relación Esbeltez (L/h): **{relacion_lh:.1f}**")
             if relacion_lh <= factor_lh: 
-                st.success(f"✅ Control de alabeo OK (≤ {factor_lh:.0f})")
+                st.success(f"✅ Cumple relación L/h (≤ {factor_lh:.0f})")
             else: 
-                st.error(f"🚨 **ALERTA DE ALABEO:** L/h ({relacion_lh:.1f}) excede el límite ({factor_lh:.0f}). **Baje manualmente el largo a L ≤ {limit_termico:.2f} m**.")
+                st.error(f"🚨 **ALERTA DE ALABEO:** L/h ({relacion_lh:.1f}) excede el criterio preliminar ({factor_lh:.0f}). **Considere reducir L a ≤ {limit_termico:.2f} m**.")
 
         with c_v3:
             st.write(f"**3. Rigidez Relativa (21ℓ):** {limit_rigidez:.2f} m")
             if largo_sug <= limit_rigidez: st.success("✅ Cumple límite de rigidez")
             else: st.error("🚨 Excede límite de rigidez.")
+
+        # =========================================================
+        # 🌡️ EVALUACIÓN DE RESPUESTA TÉRMICA INDICATIVA
+        # =========================================================
+        st.divider()
+        st.subheader("🌡️ Respuesta Térmica e Indicadores de Junta")
+        
+        # Recuperación de variables térmicas con fallbacks
+        t_max = st.session_state.get('temp_max', 32.0)
+        t_min = st.session_state.get('temp_min', 12.0)
+        t_col_val = st.session_state.get('t_col', 20.0)
+        cte_val_inp = st.session_state.get('cte_val', 10.0)
+        grad_t_inp = st.session_state.get('gradiente_t', 8.0)
+        restriccion_val = st.session_state.get('restriccion_borde', "Ninguna")
+
+        alpha = cte_val_inp * 1e-6
+
+        # 2. A. Oscilación térmica ambiente
+        # delta_t = t_max - t_min
+        # B. Temperatura de Expansión y Contracción
+        delta_t_exp = t_max - t_col_val
+        delta_t_con = t_col_val - t_min
+
+        # 3. Deformación Térmica Libre
+        epsilon_exp = alpha * max(delta_t_exp, 0.0)
+        epsilon_con = alpha * max(delta_t_con, 0.0)
+
+        # 4. Movimiento Térmico Libre Teórico del Paño
+        movimiento_exp_mm = alpha * max(delta_t_exp, 0.0) * largo_sug * 1000.0
+        movimiento_con_mm = alpha * max(delta_t_con, 0.0) * largo_sug * 1000.0
+
+        # 5. Curvatura Térmica Libre Idealizada
+        h_m = esp_cm_actual / 100.0
+        curvatura_t = (alpha * grad_t_inp) / h_m
+
+        col_res_t1, col_res_t2 = st.columns(2)
+        with col_res_t1:
+            st.markdown("##### 📏 Deformación y Movimiento Térmico Libre Teórico")
+            st.write(f"• **Oscilación térmica ambiente (ΔT):** {t_max - t_min:.1f} °C (Máx: {t_max:.1f} °C, Mín: {t_min:.1f} °C)")
+            st.write(f"• **ΔT Expansión:** {max(delta_t_exp, 0.0):.1f} °C | **ΔT Contracción:** {max(delta_t_con, 0.0):.1f} °C")
+            st.write(f"• **Deformación Térmica Libre (Exp/Con):** {epsilon_exp*1e6:.0f} με / {epsilon_con*1e6:.0f} με")
+            st.write(f"• **Movimiento Térmico Libre Teórico (Expansión):** {movimiento_exp_mm:.2f} mm")
+            st.write(f"• **Movimiento Térmico Libre Teórico (Contracción):** {movimiento_con_mm:.2f} mm")
+            st.caption("📌 *El valor corresponde al movimiento libre teórico. La apertura/cierre real de la junta depende de las restricciones, fricción, temperatura de colocación, configuración de juntas y condiciones de borde.*")
+
+        with col_res_t2:
+            st.markdown("##### 🌀 Gradiente y Curvatura Térmica Libre Idealizada")
+            st.write(f"• **Gradiente Térmico Estimado (ΔTg):** {grad_t_inp:.1f} °C")
+            st.write(f"• **Curvatura Térmica Libre Idealizada:** {curvatura_t:.6f} 1/m")
+            st.caption("📌 *Indicador teórico de curling/warping. No representa por sí solo la curvatura real ni las tensiones desarrolladas en la losa.*")
+            
+            # 9 y 11. Alerta de Gradiente
+            if grad_t_inp < 5.0:
+                st.success("🟢 **Gradiente Bajo:** Potencial de alabeo bajo.")
+            elif grad_t_inp < 10.0:
+                st.warning("🟡 **Gradiente Moderado:** Considerar en la modulación.")
+            else:
+                st.error("🔴 **Gradiente Alto:** El gradiente térmico elevado puede incrementar el potencial de alabeo/curling. Se recomienda verificar mediante análisis específico cuando las condiciones del proyecto lo requieran.")
+
+        # 8 y 11. Alerta de Restricciones de Borde
+        if restriccion_val != "Ninguna":
+            st.warning(f"⚠️ **RESTRICCIÓN TÉRMICA ({restriccion_val.upper()}):** Las restricciones pueden reducir el movimiento térmico libre y aumentar las tensiones inducidas por restricción. Revisar juntas de aislamiento, separación respecto de fundaciones, pedestales, canaletas, bordillos y otros elementos rígidos.")
+            st.error("🚨 **ALERTA DE DETALLE:** Evitar el confinamiento directo de la losa contra fundaciones, pedestales, canaletas u otros elementos rígidos sin considerar una junta de aislamiento/separación compatible con los movimientos previstos.")
 
         st.divider()
         st.subheader("🔩 Diseño de Acero (Dovelas y Amarre)")
@@ -545,7 +569,6 @@ with tab3:
             if ama_check: st.success(ama_info)
             else: st.info(ama_info)
 
-        # ESPECIFICACIONES FINALES PARA AUTOCAD (USAN EL 'largo_sug' ADOPTADO POR EL USUARIO)
         st.divider()
         with st.expander("📋 ESPECIFICACIONES TÉCNICAS Y NOTAS PARA PLANO (AutoCAD)", expanded=True):
             
@@ -576,6 +599,7 @@ ESPECIFICACIONES TÉCNICAS Y NOTAS DE PAVIMENTO RÍGIDO:
    − CAPA DE SOPORTE ESTRUCTURAL: {base_linea}.
    − MODULACIÓN DE LOSAS: PAÑOS CUADRADOS/RECTANGULARES DE {ancho_losa:.2f} m x {largo_sug:.2f} m.
    − REFUERZO PERIMETRAL EN BORDE LIBRE: BORDE ENGROSADO DE h = {D*1.25:.1f} cm (+25%) EN FRANJA DE 0.50 m (EN PERÍMETROS SIN SARDINEL ANCLADO).
+   − CONTROL TÉRMICO PRELIMINAR: VERIFICAR MODULACIÓN, MOVIMIENTO DE JUNTAS Y RESTRICCIONES SEGÚN CONDICIONES TÉRMICAS DEL PROYECTO.
 
 3. JUNTAS Y REFUERZO DE ACERO:
    − JUNTA TRANSVERSAL DE CONTRACCIÓN: PASAJUNTAS (DOVELAS) DE ACERO LISO GRADO 60 {dov_info}. MITAD DE LA BARRA ENGRASADA / ENFUNDADA PARA PERMITIR LIBRE EXPANSIÓN.
@@ -587,6 +611,7 @@ ESPECIFICACIONES TÉCNICAS Y NOTAS DE PAVIMENTO RÍGIDO:
    − SELLADO DE JUNTAS: CORDÓN DE RESPALDO (BACKER ROD) Y SELLANTE ELASTOMÉRICO DE POLIURETANO.
 """
             st.code(texto_planos, language="text")
+
 with tab4:
     st.header("📊 Ábaco de Sensibilidad: Espesor vs CBR")
     
@@ -611,25 +636,21 @@ with tab4:
         fuera_de_rango = False
         alerta_detectada = False
 
-        # Recuperar configuración de la base
         usa_base_sim = st.session_state.get('usar_base', False)
         tipo_base_sim = st.session_state.get('tipo_base_guardado', "")
         esp_base_sim = st.session_state.get('esp_base_guardado', 0)
 
         for c_val in rango_cbr:
-            # 1. k Natural
             if c_val <= 10:
                 k_nat_iter = 25.5 + 52.5 * np.log10(c_val)
             else:
                 k_nat_iter = 46.0 + 9.08 * (np.log10(c_val))**4.34
             
-            # 2. k Mejorado con Sub-base
             if usa_base_sim:
                 ki_final = calcular_k_combinado(k_nat_iter, esp_base_sim, tipo_base_sim)
             else:
                 ki_final = k_nat_iter
 
-            # 3. Espesor
             esp_pulg = calcular_espesor_aashto(
                 st.session_state['w18_res'], zr, s0, p0, pt, sc, cd_val, j_val, st.session_state['ec_res'], ki_final
             )
@@ -665,7 +686,6 @@ with tab4:
             st.subheader("📋 Tabla de Sensibilidad (Considerando Estructura de Base)")
             st.table(df.drop(columns=["Espesor Numérico"]))
             
-            # --- NOTAS DE ADVERTENCIA RECUPERADAS ---
             if alerta_detectada:
                 st.warning("""
                 🚨 **ALERTA DE OPTIMIZACIÓN TÉCNICA (Espesor > 23 cm):**
@@ -678,7 +698,7 @@ with tab4:
                 """)
             
             if fuera_de_rango:
-                st.error("⚠️ **LÍMITE EXCEDIDO:** El espesor calculado supera los 25 cm.")
+                st.error("⚠️ **LÍMITE EXCEDIDO:** El espesor calculated supera los 25 cm.")
                 st.warning("""
                 **🔍 Recomendaciones de Optimización:**
                 Cuando el espesor calculado resulta tan elevado (ej. > 25 cm), la AASHTO '93 sugiere que el diseño debe optimizarse mediante:
@@ -692,41 +712,3 @@ with tab4:
             chart_data = df.set_index("CBR Suelo (%)")[["Espesor Numérico"]]
             chart_data.columns = ["Espesor Calculado (cm)"]
             st.line_chart(chart_data)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
