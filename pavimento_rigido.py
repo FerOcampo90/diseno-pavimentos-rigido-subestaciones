@@ -137,7 +137,7 @@ with tab2:
         st.markdown("**Restricciones de Borde / Confinamiento:**")
         restriccion_borde = st.selectbox(
             "¿Existen elementos rígidos que restrinjan el movimiento de la losa?",
-            ["Ninguna", "Canaletas", "Bordillos", "Fundaciones", "Pedestales", "Estructuras / elementos rígidos", "Múltiples restricciones"]
+            ["Ninguna", "Canaletas", "Bordillos", "Fundaciones", "Pedestales", "Estructuras / elementos rígidos", "Múltiple restricciones"]
         )
 
         # =========================================================
@@ -355,16 +355,16 @@ with tab2:
             st.session_state['fc_kg_val'] = fc_kg
             st.session_state['sc_psi_val'] = sc
             st.session_state['cbr_input'] = cbr if metodo_k == "Correlación AASHTO (CBR)" else "Suelo Natural"          
-            st.session_state['delta_t'] = delta_t
-            st.session_state['temp_max'] = temp_max
-            st.session_state['temp_min'] = temp_min
-            st.session_state['periodo_diseno'] = periodo
             
             # --- DATOS TÉRMICOS NUEVOS EN SESSION STATE ---
+            st.session_state['temp_max'] = temp_max
+            st.session_state['temp_min'] = temp_min
+            st.session_state['delta_t'] = delta_t
             st.session_state['t_col'] = t_col
             st.session_state['cte_val'] = cte_val
             st.session_state['gradiente_t'] = gradiente_t
             st.session_state['restriccion_borde'] = restriccion_borde
+            st.session_state['periodo_diseno'] = periodo
             
             st.session_state['usar_base'] = usar_base
             if usar_base:
@@ -387,9 +387,13 @@ with tab3:
         st.warning("⚠️ **Tránsito Excéntrico:** En subestaciones, el tránsito suele circular cerca del borde. Se recomienda considerar bordes engrosados +25% del espesor en perímetros.")
         
         esp_cm_actual = st.session_state['esp_final_cm']
-        dt_sitio = st.session_state.get('delta_t', 20.0)
         
-        # 1. Determinación del límite térmico según ΔT
+        # 1. Recuperación dinámica de oscilación térmica para recalcular límites
+        t_max_v = st.session_state.get('temp_max', 32.0)
+        t_min_v = st.session_state.get('temp_min', 12.0)
+        dt_sitio = t_max_v - t_min_v
+        
+        # 2. Evaluación estricta del factor L/h según oscilación
         if dt_sitio > 20.0:
             factor_lh = 20.0
             msj_clima = f"Alta Oscilación (ΔT={dt_sitio:.1f}°C) → Límite L/h ≤ 20"
@@ -400,13 +404,14 @@ with tab3:
             factor_lh = 24.0
             msj_clima = f"Oscilación Baja (ΔT={dt_sitio:.1f}°C) → Límite L/h ≤ 24"
             
-        limit_termico = (factor_lh * esp_cm_actual) / 100.0  # en metros
+        # Límite térmico en metros exactos
+        limit_termico = (factor_lh * esp_cm_actual) / 100.0
 
-        # 2. Radio de rigidez relativa (21ℓ en metros)
-        esp_pulg_calculo = st.session_state['esp_pulg_base']
+        # 3. Radio de rigidez relativa (21ℓ en metros)
+        esp_pulg_calculo = st.session_state.get('esp_pulg_base', esp_cm_actual / 2.54)
         nu = 0.15 
-        l_pulg = ((st.session_state['ec_res'] * (esp_pulg_calculo**3)) / (12 * (1 - nu**2) * st.session_state['k_res']))**0.25
-        limit_rigidez = (21 * l_pulg) * 0.0254  # metros
+        l_pulg = ((st.session_state.get('ec_res', 3500000) * (esp_pulg_calculo**3)) / (12 * (1 - nu**2) * st.session_state.get('k_res', 215)))**0.25
+        limit_rigidez = (21 * l_pulg) * 0.0254
         
         col_g1, col_g2 = st.columns(2)
         with col_g1:
@@ -416,19 +421,21 @@ with tab3:
             st.metric("Ancho de Losa Efectivo (B)", f"{ancho_losa:.2f} m")
         
         with col_g2:
-            largo_sug_teorico = min(ancho_losa * 1.25, limit_rigidez, limit_termico, 4.5)
-            largo_sug_teorico = round(largo_sug_teorico * 2) / 2
-            if largo_sug_teorico < 2.5: largo_sug_teorico = 2.5
-
+            # Límite por aspecto L/B <= 1.25
+            limit_aspecto = ancho_losa * 1.25
+            
+            # El largo sugerido parte del más restrictivo
+            largo_sug_teorico = min(limit_aspecto, limit_rigidez, limit_termico)
+            
             largo_sug = st.number_input(
-                f"Largo de Losa Adoptado - L (m) [Máx. recomendado: {limit_termico:.2f} m]", 
-                min_value=1.5, 
-                max_value=6.0, 
-                value=float(largo_sug_teorico), 
-                step=0.25,
-                help="Puede ajustar manualmente la longitud de la losa para evitar alertas de alabeo térmico."
+                f"Largo de Losa Adoptado - L (m)", 
+                min_value=1.0, 
+                max_value=10.0, 
+                value=float(round(largo_sug_teorico, 2)), 
+                step=0.10,
+                help="Ajuste manualmente la longitud de la losa si desea probar otros paños."
             )
-            st.caption(f"📌 {msj_clima} (L_máx = {limit_termico:.2f} m)")
+            st.caption(f"📌 {msj_clima} (L_máx térmico = {limit_termico:.2f} m | L_máx aspecto = {limit_aspecto:.2f} m)")
 
         st.divider()
         st.subheader("🔍 Verificaciones Técnicas y Alertas para el Diseñador")
@@ -462,9 +469,6 @@ with tab3:
         st.divider()
         st.subheader("🌡️ Respuesta Térmica e Indicadores de Junta")
         
-        # Recuperación de variables térmicas con fallbacks
-        t_max = st.session_state.get('temp_max', 32.0)
-        t_min = st.session_state.get('temp_min', 12.0)
         t_col_val = st.session_state.get('t_col', 20.0)
         cte_val_inp = st.session_state.get('cte_val', 10.0)
         grad_t_inp = st.session_state.get('gradiente_t', 8.0)
@@ -472,28 +476,22 @@ with tab3:
 
         alpha = cte_val_inp * 1e-6
 
-        # 2. A. Oscilación térmica ambiente
-        # delta_t = t_max - t_min
-        # B. Temperatura de Expansión y Contracción
-        delta_t_exp = t_max - t_col_val
-        delta_t_con = t_col_val - t_min
+        delta_t_exp = t_max_v - t_col_val
+        delta_t_con = t_col_val - t_min_v
 
-        # 3. Deformación Térmica Libre
         epsilon_exp = alpha * max(delta_t_exp, 0.0)
         epsilon_con = alpha * max(delta_t_con, 0.0)
 
-        # 4. Movimiento Térmico Libre Teórico del Paño
         movimiento_exp_mm = alpha * max(delta_t_exp, 0.0) * largo_sug * 1000.0
         movimiento_con_mm = alpha * max(delta_t_con, 0.0) * largo_sug * 1000.0
 
-        # 5. Curvatura Térmica Libre Idealizada
         h_m = esp_cm_actual / 100.0
         curvatura_t = (alpha * grad_t_inp) / h_m
 
         col_res_t1, col_res_t2 = st.columns(2)
         with col_res_t1:
             st.markdown("##### 📏 Deformación y Movimiento Térmico Libre Teórico")
-            st.write(f"• **Oscilación térmica ambiente (ΔT):** {t_max - t_min:.1f} °C (Máx: {t_max:.1f} °C, Mín: {t_min:.1f} °C)")
+            st.write(f"• **Oscilación térmica ambiente (ΔT):** {dt_sitio:.1f} °C (Máx: {t_max_v:.1f} °C, Mín: {t_min_v:.1f} °C)")
             st.write(f"• **ΔT Expansión:** {max(delta_t_exp, 0.0):.1f} °C | **ΔT Contracción:** {max(delta_t_con, 0.0):.1f} °C")
             st.write(f"• **Deformación Térmica Libre (Exp/Con):** {epsilon_exp*1e6:.0f} με / {epsilon_con*1e6:.0f} με")
             st.write(f"• **Movimiento Térmico Libre Teórico (Expansión):** {movimiento_exp_mm:.2f} mm")
@@ -506,7 +504,6 @@ with tab3:
             st.write(f"• **Curvatura Térmica Libre Idealizada:** {curvatura_t:.6f} 1/m")
             st.caption("📌 *Indicador teórico de curling/warping. No representa por sí solo la curvatura real ni las tensiones desarrolladas en la losa.*")
             
-            # 9 y 11. Alerta de Gradiente
             if grad_t_inp < 5.0:
                 st.success("🟢 **Gradiente Bajo:** Potencial de alabeo bajo.")
             elif grad_t_inp < 10.0:
@@ -514,7 +511,6 @@ with tab3:
             else:
                 st.error("🔴 **Gradiente Alto:** El gradiente térmico elevado puede incrementar el potencial de alabeo/curling. Se recomienda verificar mediante análisis específico cuando las condiciones del proyecto lo requieran.")
 
-        # 8 y 11. Alerta de Restricciones de Borde
         if restriccion_val != "Ninguna":
             st.warning(f"⚠️ **RESTRICCIÓN TÉRMICA ({restriccion_val.upper()}):** Las restricciones pueden reducir el movimiento térmico libre y aumentar las tensiones inducidas por restricción. Revisar juntas de aislamiento, separación respecto de fundaciones, pedestales, canaletas, bordillos y otros elementos rígidos.")
             st.error("🚨 **ALERTA DE DETALLE:** Evitar el confinamiento directo de la losa contra fundaciones, pedestales, canaletas u otros elementos rígidos sin considerar una junta de aislamiento/separación compatible con los movimientos previstos.")
@@ -698,7 +694,7 @@ with tab4:
                 """)
             
             if fuera_de_rango:
-                st.error("⚠️ **LÍMITE EXCEDIDO:** El espesor calculated supera los 25 cm.")
+                st.error("⚠️ **LÍMITE EXCEDIDO:** El espesor calculado supera los 25 cm.")
                 st.warning("""
                 **🔍 Recomendaciones de Optimización:**
                 Cuando el espesor calculado resulta tan elevado (ej. > 25 cm), la AASHTO '93 sugiere que el diseño debe optimizarse mediante:
