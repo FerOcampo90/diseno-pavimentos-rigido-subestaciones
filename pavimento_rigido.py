@@ -4,6 +4,10 @@ from scipy.optimize import fsolve
 from scipy.stats import norm
 import pandas as pd
 
+# Conversión exacta de unidades de resistencia
+PSI_POR_MPA = 145.0377377302
+KGFCM2_POR_MPA = 10.1971621298
+
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Diseño Pavimento Rigido - Subestaciones - AASHTO '93", page_icon="🏗️", layout="wide")
 
@@ -162,14 +166,34 @@ with tab2:
         else:
             k_final = st.number_input("Ingrese valor de k personalizado:", 7.0, 12.0, 8.0, step=0.1)
         
-        fc_kg = st.selectbox("Resistencia f'c (kg/cm²)", [210, 245, 280, 315, 350], index=2)
-        fc_psi = fc_kg * 14.2233
-        
+        # Se ingresa f'c en MPa; las correlaciones AASHTO/ACI se calculan
+        # internamente con f'c en psi, sin aproximar 35 MPa a 350 kgf/cm².
+        fc_mpa = st.selectbox(
+            "Resistencia a la compresión f'c (MPa)",
+            options=[21, 25, 28, 30, 31, 35, 40, 45, 50],
+            index=5,  # Hanaqpampa: 35 MPa
+            help="Seleccione la resistencia especificada a 28 días. Conversión automática a psi y kgf/cm².",
+        )
+        fc_psi = fc_mpa * PSI_POR_MPA
+        fc_kg = fc_mpa * KGFCM2_POR_MPA
+
+        # Mantener la formulación original en unidades imperiales:
+        # S'c [psi] = k × sqrt(f'c [psi]); Ec [psi] = 57000 × sqrt(f'c [psi]).
         sc = k_final * np.sqrt(fc_psi)
         ec = 57000 * np.sqrt(fc_psi)
-        
-        st.success(f"**Módulo de Ruptura (S'c):** {sc:.2f} psi")
-        st.info(f"**Módulo de Elasticidad (Ec):** {ec:,.0f} psi")
+
+        st.caption(
+            f"Conversión automática: **{fc_mpa:g} MPa** = "
+            f"**{fc_kg:.2f} kgf/cm²** = **{fc_psi:,.2f} psi**"
+        )
+        st.success(
+            f"**Módulo de Ruptura (S'c):** {sc:.2f} psi "
+            f"({sc / PSI_POR_MPA:.3f} MPa)"
+        )
+        st.info(
+            f"**Módulo de Elasticidad (Ec):** {ec:,.0f} psi "
+            f"({ec / PSI_POR_MPA:,.0f} MPa)"
+        )
         
         st.markdown(f"""
         <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px;">
@@ -352,7 +376,9 @@ with tab2:
             st.session_state['conf_res'] = conf
             st.session_state['tiene_dovelas'] = tiene_dovelas
             st.session_state['tiene_soporte'] = tiene_soporte
-            st.session_state['fc_kg_val'] = fc_kg
+            st.session_state['fc_mpa_val'] = fc_mpa
+            st.session_state['fc_kg_val'] = fc_kg  # Solo valor equivalente
+            st.session_state['fc_psi_val'] = fc_psi
             st.session_state['sc_psi_val'] = sc
             st.session_state['cbr_input'] = cbr if metodo_k == "Correlación AASHTO (CBR)" else "Suelo Natural"          
             
@@ -572,7 +598,8 @@ with tab3:
             w18_esals = st.session_state.get('w18_res', 0)
             cbr_str = st.session_state.get('cbr_input', 'N/A')
             k_comb = st.session_state.get('k_res', 0)
-            fc_val = st.session_state.get('fc_kg_val', 350)
+            fc_mpa_val = st.session_state.get('fc_mpa_val', 35)
+            fc_kg_val = st.session_state.get('fc_kg_val', fc_mpa_val * KGFCM2_POR_MPA)
             sc_val = st.session_state.get('sc_psi_val', 0)
             usa_base = st.session_state.get('usar_base', False)
             tipo_base_txt = st.session_state.get('tipo_base_guardado', 'Base Granular')
@@ -588,7 +615,7 @@ ESPECIFICACIONES TÉCNICAS Y NOTAS DE PAVIMENTO RÍGIDO:
    − PERIODO DE DISEÑO: {p_diseno} AÑOS.
    − TRÁNSITO DE DISEÑO ACUMULADO: {w18_esals:,.0f} ESALs (W18).
    − RESISTENCIA DEL SUELO: {cbr_linea} (MÓDULO DE REACCIÓN COMBINADO k = {k_comb:.1f} pci).
-   − RESISTENCIA DEL CONCRETO: f'c = {fc_val} kg/cm² ({fc_val/10:.1f} MPa) | MÓDULO DE RUPTURA S'c = {sc_val:.1f} psi.
+   − RESISTENCIA DEL CONCRETO: f'c = {fc_mpa_val:g} MPa ({fc_kg_val:.2f} kgf/cm²) | MÓDULO DE RUPTURA S'c = {sc_val:.1f} psi.
 
 2. ESTRUCTURA Y GEOMETRÍA DEL PAVIMENTO:
    − ESPESOR DE LOSA DE CONCRETO ADOPTADO: h = {D:.1f} cm.
