@@ -1,33 +1,13 @@
 import streamlit as st
 import numpy as np
-from scipy.optimize import fsolve
+from scipy.optimize import brentq, minimize_scalar  # [CORRECCIÓN k/solver] sustituye a fsolve
 from scipy.stats import norm
 import pandas as pd
-
-# Conversión exacta de unidades de resistencia
-PSI_POR_MPA = 145.0377377302
-KGFCM2_POR_MPA = 10.1971621298
-# 1 MPa/m = 3.683431... pci (1 pci = 1 psi/in).
-PCI_POR_MPA_M = 1_000_000 * 0.0254 / 6894.757293168
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Diseño Pavimento Rigido - Subestaciones - AASHTO '93", page_icon="🏗️", layout="wide")
 
 # --- FUNCIONES TÉCNICAS ---
-def estimar_k_cbr(cbr):
-    """Correlación empírica CBR-k (Higuera/ASMOD): devuelve (MPa/m, pci).
-
-    El valor es un k NATURAL preliminar, no un k efectivo corregido por
-    condiciones estacionales, estratos rígidos o pérdida de soporte (LS).
-    """
-    if cbr <= 0:
-        raise ValueError("El CBR debe ser mayor que cero")
-    if cbr <= 10.0:
-        k_mpa_m = 2.55 + 52.5 * np.log10(cbr)
-    else:
-        k_mpa_m = 46.0 + 9.08 * np.log10(cbr)**4.34
-    return k_mpa_m, k_mpa_m * PCI_POR_MPA_M
-
 def calcular_w18(tpd, periodo, crecimiento, peso_eje):
     p_patron = 8.2  # Ton (18 kips)
     alfa = 4.0
@@ -35,7 +15,7 @@ def calcular_w18(tpd, periodo, crecimiento, peso_eje):
     r = crecimiento / 100
     f_crec = periodo * 365 if r == 0 else ((1 + r)**periodo - 1) / r * 365
     return fe, tpd * fe * f_crec
-    
+
 def calcular_k_combinado(k_subrasante, espesor_base_cm, tipo_material):
     """
     Estima el k combinado (Losa sobre base) según AASHTO/PCA.
@@ -44,44 +24,171 @@ def calcular_k_combinado(k_subrasante, espesor_base_cm, tipo_material):
     tipo_material: 'Granular' o 'Tratada con Cemento'
     """
     h_pulg = espesor_base_cm / 2.54
-    
+
     if h_pulg < 3: return k_subrasante
-    
+
     if tipo_material == "Base Granular (Zahorra)":
         factor = 1 + (0.15 * np.log(h_pulg))
         k_nuevo = k_subrasante * factor
-        
+
     elif tipo_material == "Suelo Cemento / Estabilizada":
         factor = 1 + (0.35 * np.log(h_pulg))
-        k_nuevo = k_subrasante * factor * 1.25 
-        
+        k_nuevo = k_subrasante * factor * 1.25
+
     else:
         k_nuevo = k_subrasante
 
     return min(k_nuevo, 800.0)
-    
-def calcular_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k):
+
+# =========================================================
+# [CORRECCIÓN k/solver] Correlación CBR–k con sus unidades reales
+# =========================================================
+# 1 MPa/m = 3.684 pci  (1 pci = 0.2714 MPa/m)
+FACTOR_MPA_M_A_PCI = 3.684
+
+def k_correlacion_cbr_mpa_m(cbr):
+    """
+    Correlación CBR–k de la subrasante. RESULTADO EN MPa/m (no en pci).
+    Forma publicada (PCA; recogida en el Manual de Carreteras MTC Perú – Suelos,
+    Geología, Geotecnia y Pavimentos):
+        CBR <= 10 % : k = 2.55 + 52.5·log10(CBR)        [MPa/m]
+        CBR >  10 % : k = 46.0 + 9.08·(log10(CBR))^4.34  [MPa/m]
+    Nota: la versión anterior usaba 25.5 en lugar de 2.55 (discontinuidad en
+    CBR = 10 %: 78.0 vs 55.1). Con 2.55 ambas ramas empalman (55.05 vs 55.08).
+    Es una ESTIMACIÓN PRELIMINAR del k de la subrasante; no es el k efectivo
+    de diseño que entra en AASHTO 93.
+    """
+    if cbr <= 10:
+        return 2.55 + 52.5 * np.log10(cbr)
+    return 46.0 + 9.08 * (np.log10(cbr))**4.34
+
+
+# =========================================================
+# [CORRECCIÓN k/solver] Solucionador robusto de la ecuación AASHTO 93
+# =========================================================
+def resolver_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k, d_max_pulg=40.0, tol_residuo=1e-6):
+    """
+    Resuelve la ecuación AASHTO 93 (pavimento rígido) para D [pulg].
+    Unidades: S'c [psi], Ec [psi], k [pci], W18 [ESAL], D [pulg].
+
+    Dominio matemático: el logaritmo del término de materiales exige
+    D^0.75 > 18.42/(Ec/k)^0.25 (y D^0.75 > 1.132). En D -> D_sing+ ese término
+    tiende a +inf, de modo que el residuo g(D) = log10(W18_capacidad) - log10(W18)
+    baja desde +inf hasta un mínimo y luego crece. La rama FÍSICA es la creciente
+    (más espesor -> más capacidad). Una raíz en la rama decreciente es ESPURIA.
+
+    Devuelve un dict con 'estado':
+      'ok'                   -> raíz física hallada y verificada (|residuo| <= tol)
+      'parametros_invalidos' -> datos fuera de rango físico / dominio
+      'sin_raiz'             -> g_min > 0: todo espesor del dominio supera W18
+                                (la ecuación no gobierna el espesor)
+      'fuera_de_rango'       -> se requeriría D > d_max_pulg
+      'no_convergencia'      -> fallo numérico o raíz no verificada
+    """
+    res = {"estado": None, "D_pulg": None, "residuo": None, "mensaje": "",
+           "D_singular": None, "D_g_min": None, "g_min": None,
+           "D_espuria": None, "advertencias": []}
+
+    # --- 1. Validación de parámetros ---
+    errores = []
+    for nombre, v in [("W18", w18), ("S0", s0), ("S'c", sc), ("Cd", cd),
+                      ("J", j), ("Ec", ec), ("k", k)]:
+        if v is None or not np.isfinite(v) or v <= 0:
+            errores.append(f"{nombre} debe ser > 0 (valor: {v})")
+    if zr is None or not np.isfinite(zr):
+        errores.append("Zr no es finito")
+    if not (0 < pt < p0 <= 5.0):
+        errores.append(f"Se requiere 0 < Pt < P0 <= 5 (P0={p0}, Pt={pt})")
+    if errores:
+        res["estado"] = "parametros_invalidos"
+        res["mensaje"] = "; ".join(errores)
+        return res
+
     d_psi = p0 - pt
-    def ecuacion(D):
-        if D <= 0: return 1e10
+    log_w18 = np.log10(w18)
+    c_k = 18.42 / ((ec / k)**0.25)
+    factor_ajuste = 4.22 - 0.32 * pt
+
+    def g(D):
         term_conf = zr * s0
         term_esp = 7.35 * np.log10(D + 1) - 0.06
-        term_serv = np.log10(max(d_psi, 0.01) / 3.0) / (1 + (1.624 * 10**7) / ((D + 1)**8.46))
-        factor_ajuste = 4.22 - 0.32 * pt
+        term_serv = np.log10(d_psi / 3.0) / (1 + 1.624e7 / ((D + 1)**8.46))
         num = sc * cd * (D**0.75 - 1.132)
-        den = 215.63 * j * (D**0.75 - (18.42 / ((ec / k)**0.25)))
-        if num / den <= 0: return 1e10
+        den = 215.63 * j * (D**0.75 - c_k)
         term_mat = factor_ajuste * np.log10(num / den)
-        return (term_conf + term_esp + term_serv + term_mat) - np.log10(max(w18, 1))
-    
-    for guess in [6, 8, 10, 12, 14, 18]:
-        sol, _, ier, _ = fsolve(ecuacion, guess, full_output=True)
-        # fsolve puede informar convergencia numérica sin que la ecuación se satisfaga.
-        if ier == 1 and np.isfinite(sol[0]) and sol[0] > 0:
-            residuo = ecuacion(float(sol[0]))
-            if np.isfinite(residuo) and abs(residuo) < 1e-5:
-                return float(sol[0])
-    return None
+        return (term_conf + term_esp + term_serv + term_mat) - log_w18
+
+    # --- 2. Límite inferior del dominio válido ---
+    d_sing = max(c_k, 1.132)**(4.0 / 3.0)
+    res["D_singular"] = d_sing
+    if d_sing >= d_max_pulg:
+        res["estado"] = "parametros_invalidos"
+        res["mensaje"] = f"El dominio válido (D > {d_sing:.2f} pulg) queda fuera del rango de búsqueda."
+        return res
+    d_lo = d_sing * (1 + 1e-9) + 1e-9
+
+    try:
+        # --- 3. Mínimo de g: separa la rama espuria (izq.) de la física (der.) ---
+        malla = d_sing + np.geomspace(1e-6, d_max_pulg - d_sing, 4000)
+        g_malla = np.array([g(x) for x in malla])
+        i_min = int(np.nanargmin(g_malla))
+        a = malla[max(i_min - 1, 0)]
+        b = malla[min(i_min + 1, len(malla) - 1)]
+        opt = minimize_scalar(g, bounds=(max(a, d_lo), b), method="bounded", options={"xatol": 1e-10})
+        d_gmin, g_min = float(opt.x), float(opt.fun)
+        res["D_g_min"], res["g_min"] = d_gmin, g_min
+
+        # Raíz espuria (rama decreciente, junto a la singularidad): solo informativa
+        if g_min < 0 and g(d_lo) > 0:
+            res["D_espuria"] = brentq(g, d_lo, d_gmin, xtol=1e-12)
+
+        # --- 4. Clasificación ---
+        if g_min > 0:
+            res["estado"] = "sin_raiz"
+            res["mensaje"] = (f"No existe raíz: el mínimo del residuo es g = {g_min:+.4f} > 0 "
+                              f"(en D = {d_gmin:.2f} pulg = {d_gmin*2.54:.2f} cm). Toda losa del dominio "
+                              f"válido (D > {d_sing:.2f} pulg = {d_sing*2.54:.2f} cm) tiene capacidad teórica "
+                              f"mayor que W18; AASHTO 93 no define el espesor con estos parámetros.")
+            return res
+
+        if g(d_max_pulg) < 0:
+            res["estado"] = "fuera_de_rango"
+            res["mensaje"] = f"Se requeriría D > {d_max_pulg:.0f} pulg ({d_max_pulg*2.54:.0f} cm)."
+            return res
+
+        # Unicidad en la rama física (un único cambio de signo a la derecha del mínimo)
+        cambios = int(np.sum(np.diff(np.sign(g_malla[i_min:])) != 0))
+        if cambios > 1:
+            res["estado"] = "no_convergencia"
+            res["mensaje"] = f"La rama física presenta {cambios} cambios de signo; raíz ambigua."
+            return res
+
+        # --- 5. Raíz física por método acotado (brentq) y verificación del residuo ---
+        D = brentq(g, d_gmin, d_max_pulg, xtol=1e-12, maxiter=200)
+        residuo = g(D)
+        res["residuo"] = residuo
+        if not np.isfinite(residuo) or abs(residuo) > tol_residuo:
+            res["estado"] = "no_convergencia"
+            res["mensaje"] = f"Raíz no verificada (residuo = {residuo:.2e})."
+            return res
+
+        res["estado"] = "ok"
+        res["D_pulg"] = D
+        res["mensaje"] = f"Raíz física verificada (|residuo| = {abs(residuo):.1e})."
+        if not (3.5 <= D <= 12.5):
+            res["advertencias"].append(
+                f"D = {D:.2f} pulg está fuera del rango de espesores del AASHO Road Test (≈3.5–12.5 pulg): extrapolación.")
+        return res
+    except Exception as e:  # fallo numérico: no se confunde con ausencia de raíz
+        res["estado"] = "no_convergencia"
+        res["mensaje"] = f"Fallo numérico del solucionador: {e}"
+        return res
+
+
+def calcular_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k):
+    """Interfaz anterior (D en pulg o None). Usa el solucionador robusto."""
+    r = resolver_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k)
+    return r["D_pulg"] if r["estado"] == "ok" else None
 
 # --- INTERFAZ ---
 st.title("🏗️ Diseñador Pavimento Rigido - Subestaciones")
@@ -90,10 +197,12 @@ st.title("🏗️ Diseñador Pavimento Rigido - Subestaciones")
 with st.expander("📝 Ecuaciones de Diseño (AASHTO 93 & Correlaciones)"):
     st.markdown("**1. Ecuación Estructural AASHTO 93 (Rígido):**")
     st.latex(r" \log_{10}(W_{18}) = Z_R S_0 + 7.35 \log_{10}(D + 1) - 0.06 + \frac{\log_{10}[\Delta PSI / (4.5 - 1.5)]}{1 + \frac{1.624 \times 10^7}{(D + 1)^{8.46}}} + (4.22 - 0.32p_t) \log_{10} \left[ \frac{S'_c C_d (D^{0.75} - 1.132)}{215.63 J \left( D^{0.75} - \frac{18.42}{(E_c/k)^{0.25}} \right)} \right] ")
-    
-    st.markdown("**2. Correlación empírica de Módulo de Reacción (k) vs CBR (resultado en MPa/m):**")
-    st.latex(r" \text{Si } CBR \leq 10\%: \quad k = 2.55 + 52.5 \log_{10}(CBR) ")
-    st.latex(r" \text{Si } CBR > 10\%: \quad k = 46.0 + 9.08 (\log_{10}(CBR))^{4.34} ")
+
+    st.markdown("**2. Correlación de Módulo de Reacción (k) vs CBR — resultado en MPa/m (estimación preliminar):**")
+    st.latex(r" \text{Si } CBR \leq 10\%: \quad k\,[\mathrm{MPa/m}] = 2.55 + 52.5 \log_{10}(CBR) ")
+    st.latex(r" \text{Si } CBR > 10\%: \quad k\,[\mathrm{MPa/m}] = 46.0 + 9.08 (\log_{10}(CBR))^{4.34} ")
+    st.latex(r" k\,[\mathrm{pci}] = 3.684 \cdot k\,[\mathrm{MPa/m}] ")
+    st.caption("El k que entra en la ecuación AASHTO 93 es el **k efectivo de diseño (pci)**, definido de forma independiente en 'Parámetros de Diseño'.")
 
 tab1, tab2, tab3, tab4 = st.tabs(["🚛 Tránsito y Carga", "🧱 Parámetros de Diseño", "📐 Geometría y Juntas", "📊 Ábaco"])
 
@@ -107,10 +216,10 @@ with tab1:
     with c2:
         peso_eje = st.number_input("Peso eje más pesado (Ton)", min_value=1.0, value=11.0, step=0.5)
         st.caption("ℹ️ El daño se calcula basándose en un **eje patrón de 8.2 Ton** (18 kips).")
-    
+
     fe, w18_total = calcular_w18(tpd, periodo, tasa, peso_eje)
     st.metric("W18 Acumulado (ESALs)", f"{w18_total:,.0f}")
-    
+
     if w18_total < 200000:
         st.warning("⚠️ **Nota Técnica:** El tránsito acumulado es bajo para el rango de aplicación original de AASHTO 93. El espesor obtenido está gobernado por criterios mínimos constructivos.")
 
@@ -120,27 +229,27 @@ with tab2:
 
     with col1:
         st.subheader("🛡️ Confiabilidad y Desviación")
-        tipo_infra = st.selectbox("Clasificación de la Vía / Infraestructura:", 
-                                ["Subestación Extra Alta Tensión (230-500 kV)", 
-                                 "Subestación Alta Tensión (66-115 kV)", 
+        tipo_infra = st.selectbox("Clasificación de la Vía / Infraestructura:",
+                                ["Subestación Extra Alta Tensión (230-500 kV)",
+                                 "Subestación Alta Tensión (66-115 kV)",
                                  "Autopistas y Vías Expresas", "Arterias Principales", "Colectoras", "Locales / Industriales"])
-        
+
         map_conf = {
             "Subestación Extra Alta Tensión (230-500 kV)": 95, "Subestación Alta Tensión (66-115 kV)": 85,
             "Autopistas y Vías Expresas": 90, "Arterias Principales": 85, "Colectoras": 75, "Locales / Industriales": 55
         }
-        
+
         conf = st.select_slider("Confiabilidad R (%)", [50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99], value=map_conf.get(tipo_infra, 95))
         zr = norm.ppf(1 - (conf / 100))
         st.info(f"**Confiabilidad adoptada:** {conf}% (Zr = {zr:.3f})")
-        
-        s0_opt = st.selectbox("Guía para S0 (Desviación Estándar):", 
+
+        s0_opt = st.selectbox("Guía para S0 (Desviación Estándar):",
                              ["Construcción Rígida Estándar (0.35)", "Mayor incertidumbre (0.39)", "Personalizado"])
         s0 = st.number_input("Valor S0", 0.30, 0.45, 0.35) if s0_opt == "Personalizado" else (0.35 if "0.35" in s0_opt else 0.39)
 
         p0 = st.slider("Serviciabilidad Inicial (P0)", 4.0, 5.0, 4.5)
         pt = st.slider("Serviciabilidad Final (Pt)", 2.0, 3.0, 2.5)
-        
+
         # =========================================================
         # 🌡️ MÓDULO TÉRMICO Y CLIMÁTICO (EVALUACIÓN DE AMBIENTE Y SITIO)
         # =========================================================
@@ -166,18 +275,18 @@ with tab2:
 
         # =========================================================
         st.subheader("🧱 Propiedades del Concreto")
-        k_modo = st.radio("Definición del factor k (S'c = k * √f'c):", 
+        k_modo = st.radio("Definición del factor k (S'c = k * √f'c):",
                           ["Valores Recomendados (Memoria)", "Ingreso Manual"], horizontal=True)
-        
+
         if k_modo == "Valores Recomendados (Memoria)":
-            tipo_pav = st.selectbox("Tipo de Pavimento:", 
-                                     ["Autopistas/Carreteras (k=10.8)", 
-                                      "Zonas Industriales (k=10.1)", 
+            tipo_pav = st.selectbox("Tipo de Pavimento:",
+                                     ["Autopistas/Carreteras (k=10.8)",
+                                      "Zonas Industriales (k=10.1)",
                                       "Urbanos Secundarios (k=9.4)",
                                       "Subestaciones / Estándar (k=8.0)"])
-            
+
             map_k = {
-                "Autopistas/Carreteras (k=10.8)": 10.8, 
+                "Autopistas/Carreteras (k=10.8)": 10.8,
                 "Zonas Industriales (k=10.1)": 10.1,
                 "Urbanos Secundarios (k=9.4)": 9.4,
                 "Subestaciones / Estándar (k=8.0)": 8.0
@@ -185,36 +294,18 @@ with tab2:
             k_final = map_k[tipo_pav]
         else:
             k_final = st.number_input("Ingrese valor de k personalizado:", 7.0, 12.0, 8.0, step=0.1)
-        
-        # Se ingresa f'c en MPa; las correlaciones AASHTO/ACI se calculan
-        # internamente con f'c en psi, sin aproximar 35 MPa a 350 kgf/cm².
-        fc_mpa = st.selectbox(
-            "Resistencia a la compresión f'c (MPa)",
-            options=[21, 25, 28, 30, 31, 35, 40, 45, 50],
-            index=5,  # Hanaqpampa: 35 MPa
-            help="Seleccione la resistencia especificada a 28 días. Conversión automática a psi y kgf/cm².",
-        )
-        fc_psi = fc_mpa * PSI_POR_MPA
-        fc_kg = fc_mpa * KGFCM2_POR_MPA
 
-        # Mantener la formulación original en unidades imperiales:
-        # S'c [psi] = k × sqrt(f'c [psi]); Ec [psi] = 57000 × sqrt(f'c [psi]).
+        # [CORRECCIÓN f'c] Selector en MPa (valores usuales de proyecto); 1 MPa = 145.0377 psi
+        fc_mpa = st.selectbox("Resistencia f'c (MPa)", [21, 24, 28, 31, 35], index=4)
+        fc_psi = fc_mpa * 145.0377
+        st.caption(f"f'c = {fc_mpa} MPa = {fc_psi:,.2f} psi")
+
         sc = k_final * np.sqrt(fc_psi)
         ec = 57000 * np.sqrt(fc_psi)
 
-        st.caption(
-            f"Conversión automática: **{fc_mpa:g} MPa** = "
-            f"**{fc_kg:.2f} kgf/cm²** = **{fc_psi:,.2f} psi**"
-        )
-        st.success(
-            f"**Módulo de Ruptura (S'c):** {sc:.2f} psi "
-            f"({sc / PSI_POR_MPA:.3f} MPa)"
-        )
-        st.info(
-            f"**Módulo de Elasticidad (Ec):** {ec:,.0f} psi "
-            f"({ec / PSI_POR_MPA:,.0f} MPa)"
-        )
-        
+        st.success(f"**Módulo de Ruptura (S'c):** {sc:.2f} psi")
+        st.info(f"**Módulo de Elasticidad (Ec):** {ec:,.0f} psi")
+
         st.markdown(f"""
         <div style="background-color: #f0f2f6; padding: 10px; border-radius: 5px;">
             <small><b>Fórmulas aplicadas:</b><br>
@@ -225,83 +316,93 @@ with tab2:
     with col2:
         st.subheader("🌍 Soporte del Suelo (Sistema Multicapa)")
         st.markdown("#### 1. Subrasante Natural")
-        
+
         metodo_k = st.radio(
             "Método para definir k natural:",
             ["Correlación AASHTO (CBR)", "Ensayo de Placa de Carga (Manual)"],
             horizontal=True
         )
-        
+
         if metodo_k == "Correlación AASHTO (CBR)":
             cbr = st.number_input("CBR de la Subrasante (%)", 1.0, 100.0, 3.0, step=0.5, help="Valor de soporte del suelo natural")
-            
-            k_natural_mpa_m, k_natural = estimar_k_cbr(cbr)
-            st.caption(
-                f"Valor k natural correlacionado: **{k_natural_mpa_m:.2f} MPa/m** "
-                f"= **{k_natural:.1f} pci** (convertido para AASHTO 93)."
-            )
-            st.warning(
-                "⚠️ **k preliminar, no k efectivo de diseño validado:** "
-                "la correlación CBR–k es empírica; comprobar su aplicabilidad, "
-                "ensayo de placa cuando corresponda y correcciones por estratos rígidos, "
-                "estacionalidad y pérdida de soporte (LS). "
-                "Un CBR elevado no justifica automáticamente un k efectivo elevado."
-            )
+
+            # [CORRECCIÓN k] La correlación entrega MPa/m; se convierte a pci solo como estimación
+            k_corr_mpa = k_correlacion_cbr_mpa_m(cbr)
+            k_natural = k_corr_mpa * FACTOR_MPA_M_A_PCI
+
+            st.caption(f"k correlacionado (estimación preliminar): **{k_corr_mpa:.1f} MPa/m ≈ {k_natural:.1f} pci**")
+            st.warning("⚠️ **Aviso Técnico:** La correlación CBR–k es una aproximación teórica. Se recomienda validar con **placa de carga**. Este valor NO se usa automáticamente como k efectivo de diseño (ver apartado 3).")
 
             with st.expander("📝 Ver justificación metodológica"):
                 st.info("""
-                La correlación empírica CBR–k (Higuera / ASMOD) entrega **k en MPa/m**, no en pci.
-                Para la ecuación estructural AASHTO 93 se convierte a **pci** usando
-                1 MPa/m ≈ 3,6834 pci. El resultado es una estimación del **k natural**;
-                debe evaluarse el módulo efectivo de apoyo según la estructura de pavimento,
-                el perfil geotécnico y la pérdida de soporte.
+                **Unidades:** la correlación CBR–k (PCA / Manual MTC Perú) está expresada en **MPa/m**. Su resultado se convierte a pci (×3.684) solo como estimación de referencia.
+
+                **Criterio de Diseño:** el k que entra en AASHTO '93 es el **k efectivo de diseño (pci)**, definido de forma independiente en el apartado 3. Con CBR altos la correlación produce k muy elevados para una subrasante natural; el valor efectivo debe sustentarse con ensayo de placa o criterio geotécnico.
                 """)
         else:
             col_k1, col_k2 = st.columns(2)
             with col_k1:
-                k_manual_mpa = st.number_input("k del Ensayo (MPa/m)", 1.0, 500.0, 40.0)
+                k_manual_mpa = st.number_input("k del Ensayo (MPa/m)", 10.0, 150.0, 40.0)
             with col_k2:
-                k_natural = k_manual_mpa * PCI_POR_MPA_M
+                k_natural = k_manual_mpa * 3.684
                 st.metric("k Natural (pci)", f"{k_natural:.1f}")
-            
+
             st.success("✅ Usando valor real de ensayo de placa.")
 
         st.divider()
         st.markdown("#### 2. Mejoramiento / Sub-base")
         st.caption("El uso de una base incrementa el valor de reacción (k combinado).")
-        
+
         usar_base = st.checkbox("¿Incluir capa de Base/Mejoramiento?", value=True)
-        
+
         if usar_base:
             c_b1, c_b2 = st.columns(2)
             with c_b1:
                 tipo_base = st.selectbox("Material de Base:", ["Base Granular (Zahorra)", "Suelo Cemento / Estabilizada"])
             with c_b2:
                 esp_base = st.number_input("Espesor Base (cm):", 10.0, 60.0, 15.0, step=5.0)
-            
-            k_diseno = calcular_k_combinado(k_natural, esp_base, tipo_base)
-            mejora_pct = ((k_diseno - k_natural) / k_natural) * 100
-            
-            st.metric("Módulo k Combinado (Diseño)", f"{k_diseno:.1f} pci", delta=f"+{mejora_pct:.0f}% Incremento")
-            
+
+            # [CORRECCIÓN k] k combinado = ESTIMACIÓN de referencia (ya no es automáticamente el k de diseño)
+            k_estimado = calcular_k_combinado(k_natural, esp_base, tipo_base)
+            mejora_pct = ((k_estimado - k_natural) / k_natural) * 100
+
+            st.metric("k Combinado Estimado (referencia)", f"{k_estimado:.1f} pci", delta=f"+{mejora_pct:.0f}% Incremento")
+
             if tipo_base == "Suelo Cemento / Estabilizada" and esp_base < 15:
                 st.warning("⚠️ Recomendación: Para bases estabilizadas use espesores ≥ 15 cm.")
-                
-        else:
-            k_diseno = k_natural
-            st.metric("Módulo k de Diseño", f"{k_diseno:.1f} pci")
-            st.info("Sin subbase incluida en el modelo. Comprobar que el k empleado represente el apoyo efectivo de la sección real, incluso si existe solado de limpieza.")
 
-        if k_diseno > 500:
-            st.warning(
-                "⚠️ k mayor de 500 pci. Este valor alto procede de una correlación empírica "
-                "o de una estimación de apoyo y NO debe asumirse como módulo efectivo final "
-                "sin comprobación geotécnica, corrección por pérdida de soporte y revisión "
-                "del campo de aplicabilidad de AASHTO 93."
-            )
-        k_val = k_diseno
+        else:
+            k_estimado = k_natural
+            st.metric("k Estimado sobre subrasante (referencia)", f"{k_estimado:.1f} pci")
+            st.info("Diseño directo sobre subrasante natural (No recomendado para cargas altas).")
+
+        # =========================================================
+        # [CORRECCIÓN k] 3. k EFECTIVO DE DISEÑO — dato independiente de la correlación
+        # =========================================================
+        st.divider()
+        st.markdown("#### 3. Módulo de reacción EFECTIVO de diseño (k, pci)")
+        st.caption("Es el único k que entra en la ecuación AASHTO 93, en geometría (21ℓ) y en las notas de plano.")
+        origen_k = st.radio(
+            "Origen del k efectivo de diseño:",
+            ["Adoptado manualmente (hipótesis de proyecto)",
+             "Igual a la estimación anterior (correlación/ensayo + base)"],
+            index=0
+        )
+        if origen_k.startswith("Adoptado"):
+            k_val = st.number_input("k efectivo adoptado (pci)", 25.0, 2000.0, 173.5, step=0.5,
+                                    help="Hanaqpampa: 173.5 pci adoptado preliminarmente, pendiente de verificación geotécnica.")
+            k_origen_txt = "ADOPTADO PRELIMINARMENTE, PENDIENTE DE VERIFICACIÓN GEOTÉCNICA"
+            st.warning("⚠️ **k efectivo adoptado preliminarmente, pendiente de verificación geotécnica.** "
+                       "No es resultado directo de la correlación CBR–k.")
+        else:
+            k_val = k_estimado
+            k_origen_txt = ("ESTIMADO POR CORRELACIÓN CBR–k" if metodo_k == "Correlación AASHTO (CBR)"
+                            else "ENSAYO DE PLACA") + (" + APORTE DE BASE" if usar_base else "")
+            st.info("k efectivo = estimación anterior. Verifique que el valor sea representativo del apoyo real.")
+        st.metric("k efectivo de diseño (AASHTO 93)", f"{k_val:.1f} pci",
+                  delta=f"{k_val - k_estimado:+.1f} pci vs. estimación ({k_estimado:.1f} pci)", delta_color="off")
         st.subheader("🔗 Transferencia de Carga (J)")
-        
+
         j_manual = st.toggle("Ingresar J manualmente", False)
 
         if j_manual:
@@ -347,7 +448,7 @@ with tab2:
 
         st.subheader("💧 Coeficiente de Drenaje (Cd)")
         st.markdown("Responda las siguientes preguntas para estimar el valor Cd:")
-        
+
         col_d1, col_d2 = st.columns(2)
         with col_d1:
             st.markdown("**1. Velocidad de Drenaje:**")
@@ -380,42 +481,62 @@ with tab2:
             [0.95, 0.90, 0.80, 0.70],
             [0.80, 0.75, 0.65, 0.55]
         ]
-        
+
         cd_recomendado = matriz_cd[idx_calidad][idx_exposicion]
-        
+
         st.write("---")
         cd_val = st.number_input(f"Valor Cd Recomendado: {cd_recomendado}", 0.50, 1.40, cd_recomendado, step=0.01)
-        
+
         if cd_val < 1.0:
             st.error(f"📉 Drenaje Lento (Cd={cd_val}). El agua atrapada debilitará la base, requiriendo mayor espesor de concreto.")
         elif cd_val > 1.0:
             st.success(f"📈 Buen Drenaje (Cd={cd_val}). El agua fluye rápido, permitiendo optimizar el espesor.")
         else:
             st.info("Drenaje Estándar (Cd = 1.0).")
-            
+
     st.divider()
     if st.button("🚀 CALCULAR ESTRUCTURA"):
-        esp_pulg = calcular_espesor_aashto(w18_total, zr, s0, p0, pt, sc, cd_val, j_val, ec, k_val)
-        
+        # [CORRECCIÓN solver] Resultado detallado: distingue raíz, ausencia de raíz, rango y convergencia
+        res_aashto = resolver_espesor_aashto(w18_total, zr, s0, p0, pt, sc, cd_val, j_val, ec, k_val)
+        esp_pulg = res_aashto["D_pulg"] if res_aashto["estado"] == "ok" else None
+
+        if not esp_pulg:
+            # No se conservan resultados anteriores: evita que geometría/ábaco usen un cálculo obsoleto
+            for _clave in ('esp_final_cm', 'esp_pulg_base', 'w18_res', 'k_res'):
+                st.session_state.pop(_clave, None)
+            titulos = {
+                "sin_raiz": "ℹ️ La ecuación AASHTO 93 NO tiene raíz con estos parámetros",
+                "fuera_de_rango": "🚨 Espesor requerido fuera del rango de búsqueda",
+                "parametros_invalidos": "🚨 Parámetros fuera de rango",
+                "no_convergencia": "🚨 Fallo de convergencia numérica",
+            }
+            st.error(f"**{titulos.get(res_aashto['estado'], 'Sin resultado')}** (k efectivo = {k_val:.1f} pci)")
+            st.write(res_aashto["mensaje"])
+            if res_aashto["estado"] == "sin_raiz":
+                st.warning("No se asigna un espesor AASHTO. Revise el **k efectivo de diseño** (un k sobreestimado "
+                           "elimina la raíz). El espesor quedaría gobernado por criterios mínimos constructivos, "
+                           "decisión que debe tomar y justificar el diseñador.")
+
         if esp_pulg:
             esp_exacto_cm = esp_pulg * 2.54
-            esp_comercial_cm = np.ceil(esp_exacto_cm) 
+            esp_comercial_cm = np.ceil(esp_exacto_cm)
             esp_final_cm = max(esp_comercial_cm, 15.0)
-            
+
             st.session_state['esp_final_cm'] = esp_final_cm
             st.session_state['esp_pulg_base'] = esp_pulg
             st.session_state['ec_res'] = ec
-            st.session_state['k_res'] = k_val
+            st.session_state['k_res'] = k_val            # k EFECTIVO de diseño (pci)
+            st.session_state['k_origen'] = k_origen_txt  # [CORRECCIÓN k] trazabilidad del origen de k
+            st.session_state['k_estimado_ref'] = k_estimado
             st.session_state['w18_res'] = w18_total
             st.session_state['conf_res'] = conf
             st.session_state['tiene_dovelas'] = tiene_dovelas
             st.session_state['tiene_soporte'] = tiene_soporte
             st.session_state['fc_mpa_val'] = fc_mpa
-            st.session_state['fc_kg_val'] = fc_kg  # Solo valor equivalente
             st.session_state['fc_psi_val'] = fc_psi
             st.session_state['sc_psi_val'] = sc
-            st.session_state['cbr_input'] = cbr if metodo_k == "Correlación AASHTO (CBR)" else "Suelo Natural"          
-            
+            st.session_state['cbr_input'] = cbr if metodo_k == "Correlación AASHTO (CBR)" else "Suelo Natural"
+
             # --- DATOS TÉRMICOS NUEVOS EN SESSION STATE ---
             st.session_state['temp_max'] = temp_max
             st.session_state['temp_min'] = temp_min
@@ -425,7 +546,7 @@ with tab2:
             st.session_state['gradiente_t'] = gradiente_t
             st.session_state['restriccion_borde'] = restriccion_borde
             st.session_state['periodo_diseno'] = periodo
-            
+
             st.session_state['usar_base'] = usar_base
             if usar_base:
                 st.session_state['tipo_base_guardado'] = tipo_base
@@ -433,33 +554,30 @@ with tab2:
             else:
                 st.session_state['tipo_base_guardado'] = ""
                 st.session_state['esp_base_guardado'] = 0
-                
+
             st.toast("✅ Cálculo realizado y datos guardados correctamente.")
             st.success(f"### Espesor de Losa Recomendado: {esp_final_cm:.1f} cm")
-            st.info(f"*(Valor exacto AASHTO: {esp_exacto_cm:.2f} cm | k diseño: {k_val:.1f} pci)*")
-        else:
-            st.error(
-                "No se obtuvo una raíz numérica válida de la ecuación AASHTO 93 "
-                "para estos parámetros. Revisar el módulo k efectivo, el rango de "
-                "aplicabilidad y el resto de las entradas; no se adoptará un espesor "
-                "calculado ficticio."
-            )
+            st.info(f"*(Valor exacto AASHTO: {esp_exacto_cm:.2f} cm | k efectivo de diseño: {k_val:.1f} pci — {k_origen_txt.lower()})*")
+            st.caption(f"Solucionador: {res_aashto['mensaje']} Dominio válido D > {res_aashto['D_singular']*2.54:.2f} cm."
+                       + (f" Raíz espuria descartada (rama no física): {res_aashto['D_espuria']*2.54:.2f} cm." if res_aashto['D_espuria'] else ""))
+            for _adv in res_aashto["advertencias"]:
+                st.warning(_adv)
 
 with tab3:
     st.header("📐 Recomendaciones Geométricas y Modulación")
-    
+
     if 'esp_final_cm' not in st.session_state:
         st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para habilitar esta sección.")
     else:
         st.warning("⚠️ **Tránsito Excéntrico:** En subestaciones, el tránsito suele circular cerca del borde. Se recomienda considerar bordes engrosados +25% del espesor en perímetros.")
-        
+
         esp_cm_actual = st.session_state['esp_final_cm']
-        
+
         # 1. Recuperación dinámica de oscilación térmica para recalcular límites
         t_max_v = st.session_state.get('temp_max', 32.0)
         t_min_v = st.session_state.get('temp_min', 12.0)
         dt_sitio = t_max_v - t_min_v
-        
+
         # 2. Evaluación estricta del factor L/h según oscilación
         if dt_sitio > 20.0:
             factor_lh = 20.0
@@ -470,35 +588,35 @@ with tab3:
         else:
             factor_lh = 24.0
             msj_clima = f"Oscilación Baja (ΔT={dt_sitio:.1f}°C) → Límite L/h ≤ 24"
-            
+
         # Límite térmico en metros exactos
         limit_termico = (factor_lh * esp_cm_actual) / 100.0
 
         # 3. Radio de rigidez relativa (21ℓ en metros)
         esp_pulg_calculo = st.session_state.get('esp_pulg_base', esp_cm_actual / 2.54)
-        nu = 0.15 
+        nu = 0.15
         l_pulg = ((st.session_state.get('ec_res', 3500000) * (esp_pulg_calculo**3)) / (12 * (1 - nu**2) * st.session_state.get('k_res', 215)))**0.25
         limit_rigidez = (21 * l_pulg) * 0.0254
-        
+
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             ancho_carril = st.number_input("Ancho total de carril (m)", 2.5, 7.0, 4.5, step=0.1)
             num_juntas_long = 1 if ancho_carril > 4.5 else 0
             ancho_losa = ancho_carril / (num_juntas_long + 1)
             st.metric("Ancho de Losa Efectivo (B)", f"{ancho_losa:.2f} m")
-        
+
         with col_g2:
             # Límite por aspecto L/B <= 1.25
             limit_aspecto = ancho_losa * 1.25
-            
+
             # El largo sugerido parte del más restrictivo
             largo_sug_teorico = min(limit_aspecto, limit_rigidez, limit_termico)
-            
+
             largo_sug = st.number_input(
-                f"Largo de Losa Adoptado - L (m)", 
-                min_value=1.0, 
-                max_value=10.0, 
-                value=float(round(largo_sug_teorico, 2)), 
+                f"Largo de Losa Adoptado - L (m)",
+                min_value=1.0,
+                max_value=10.0,
+                value=float(round(largo_sug_teorico, 2)),
                 step=0.10,
                 help="Ajuste manualmente la longitud de la losa si desea probar otros paños."
             )
@@ -507,7 +625,7 @@ with tab3:
         st.divider()
         st.subheader("🔍 Verificaciones Técnicas y Alertas para el Diseñador")
         c_v1, c_v2, c_v3 = st.columns(3)
-        
+
         with c_v1:
             relacion_lb = largo_sug / ancho_losa
             st.write(f"**1. Relación de Aspecto (L/B):** {relacion_lb:.2f}")
@@ -520,9 +638,9 @@ with tab3:
             st.markdown("**2. 🔥 Control preliminar de modulación térmica:**")
             st.caption("Criterio interno de predimensionamiento térmico. No constituye una verificación mecanicista de curling/warping.")
             st.write(f"Relación Esbeltez (L/h): **{relacion_lh:.1f}**")
-            if relacion_lh <= factor_lh: 
+            if relacion_lh <= factor_lh:
                 st.success(f"✅ Cumple relación L/h (≤ {factor_lh:.0f})")
-            else: 
+            else:
                 st.error(f"🚨 **ALERTA DE ALABEO:** L/h ({relacion_lh:.1f}) excede el criterio preliminar ({factor_lh:.0f}). **Considere reducir L a ≤ {limit_termico:.2f} m**.")
 
         with c_v3:
@@ -535,7 +653,7 @@ with tab3:
         # =========================================================
         st.divider()
         st.subheader("🌡️ Respuesta Térmica e Indicadores de Junta")
-        
+
         t_col_val = st.session_state.get('t_col', 20.0)
         cte_val_inp = st.session_state.get('cte_val', 10.0)
         grad_t_inp = st.session_state.get('gradiente_t', 8.0)
@@ -570,7 +688,7 @@ with tab3:
             st.write(f"• **Gradiente Térmico Estimado (ΔTg):** {grad_t_inp:.1f} °C")
             st.write(f"• **Curvatura Térmica Libre Idealizada:** {curvatura_t:.6f} 1/m")
             st.caption("📌 *Indicador teórico de curling/warping. No representa por sí solo la curvatura real ni las tensiones desarrolladas en la losa.*")
-            
+
             if grad_t_inp < 5.0:
                 st.success("🟢 **Gradiente Bajo:** Potencial de alabeo bajo.")
             elif grad_t_inp < 10.0:
@@ -584,7 +702,7 @@ with tab3:
 
         st.divider()
         st.subheader("🔩 Diseño de Acero (Dovelas y Amarre)")
-        
+
         D = st.session_state['esp_final_cm']
         st_dovelas = st.session_state.get('tiene_dovelas', "No")
         st_soporte = st.session_state.get('tiene_soporte', "No")
@@ -625,7 +743,7 @@ with tab3:
             st.caption("Transferencia de carga transversal")
             if dov_check: st.success(dov_info)
             else: st.info(dov_info)
-        
+
         with col_a2:
             st.markdown("#### 🔗 Barras de Amarre")
             st.caption("Anclaje junta longitudinal")
@@ -634,13 +752,13 @@ with tab3:
 
         st.divider()
         with st.expander("📋 ESPECIFICACIONES TÉCNICAS Y NOTAS PARA PLANO (AutoCAD)", expanded=True):
-            
+
             p_diseno = st.session_state.get('periodo_diseno', 25)
             w18_esals = st.session_state.get('w18_res', 0)
             cbr_str = st.session_state.get('cbr_input', 'N/A')
             k_comb = st.session_state.get('k_res', 0)
-            fc_mpa_val = st.session_state.get('fc_mpa_val', 35)
-            fc_kg_val = st.session_state.get('fc_kg_val', fc_mpa_val * KGFCM2_POR_MPA)
+            fc_val = st.session_state.get('fc_mpa_val', 35)
+            fc_psi_txt = st.session_state.get('fc_psi_val', fc_val * 145.0377)
             sc_val = st.session_state.get('sc_psi_val', 0)
             usa_base = st.session_state.get('usar_base', False)
             tipo_base_txt = st.session_state.get('tipo_base_guardado', 'Base Granular')
@@ -655,8 +773,9 @@ ESPECIFICACIONES TÉCNICAS Y NOTAS DE PAVIMENTO RÍGIDO:
 1. PARÁMETROS BASE DE DISEÑO (METODOLOGÍA AASHTO 93):
    − PERIODO DE DISEÑO: {p_diseno} AÑOS.
    − TRÁNSITO DE DISEÑO ACUMULADO: {w18_esals:,.0f} ESALs (W18).
-   − RESISTENCIA DEL SUELO: {cbr_linea} (MÓDULO DE REACCIÓN COMBINADO k = {k_comb:.1f} pci).
-   − RESISTENCIA DEL CONCRETO: f'c = {fc_mpa_val:g} MPa ({fc_kg_val:.2f} kgf/cm²) | MÓDULO DE RUPTURA S'c = {sc_val:.1f} psi.
+   − RESISTENCIA DEL SUELO: {cbr_linea}.
+   − MÓDULO DE REACCIÓN EFECTIVO DE DISEÑO: k = {k_comb:.1f} pci ({st.session_state.get('k_origen', 'ORIGEN NO REGISTRADO')}).
+   − RESISTENCIA DEL CONCRETO: f'c = {fc_val} MPa ({fc_psi_txt:,.2f} psi) | MÓDULO DE RUPTURA S'c = {sc_val:.1f} psi.
 
 2. ESTRUCTURA Y GEOMETRÍA DEL PAVIMENTO:
    − ESPESOR DE LOSA DE CONCRETO ADOPTADO: h = {D:.1f} cm.
@@ -678,7 +797,7 @@ ESPECIFICACIONES TÉCNICAS Y NOTAS DE PAVIMENTO RÍGIDO:
 
 with tab4:
     st.header("📊 Ábaco de Sensibilidad: Espesor vs CBR")
-    
+
     st.markdown("""
     ### ¿Qué es el ábaco de diseño?
     Permite evaluar la sensibilidad del espesor frente a variaciones del **CBR del suelo natural**.
@@ -704,22 +823,41 @@ with tab4:
         tipo_base_sim = st.session_state.get('tipo_base_guardado', "")
         esp_base_sim = st.session_state.get('esp_base_guardado', 0)
 
+        # [CORRECCIÓN k] Punto de diseño con el k EFECTIVO seleccionado (no proviene del barrido de CBR)
+        st.info(f"📌 **Punto de diseño:** k efectivo = {st.session_state.get('k_res', 0):.1f} pci "
+                f"({st.session_state.get('k_origen', 'N/D').lower()}) → espesor adoptado "
+                f"{st.session_state.get('esp_final_cm', 0):.1f} cm. "
+                "El barrido inferior usa el k **estimado por correlación CBR–k (MPa/m → pci)** y es solo de sensibilidad.")
+
         for c_val in rango_cbr:
-            _, k_nat_iter = estimar_k_cbr(c_val)
-            
+            # [CORRECCIÓN k] correlación en MPa/m convertida a pci
+            k_nat_iter = k_correlacion_cbr_mpa_m(c_val) * FACTOR_MPA_M_A_PCI
+
             if usa_base_sim:
                 ki_final = calcular_k_combinado(k_nat_iter, esp_base_sim, tipo_base_sim)
             else:
                 ki_final = k_nat_iter
 
-            esp_pulg = calcular_espesor_aashto(
+            res_iter = resolver_espesor_aashto(
                 st.session_state['w18_res'], zr, s0, p0, pt, sc, cd_val, j_val, st.session_state['ec_res'], ki_final
             )
+            esp_pulg = res_iter["D_pulg"] if res_iter["estado"] == "ok" else None
+
+            if not esp_pulg:
+                # [CORRECCIÓN solver] la ausencia de raíz se muestra, no se omite en silencio
+                datos_abaco.append({
+                    "CBR Suelo (%)": f"{c_val:.1f}%",
+                    "k Comb. (pci)": round(ki_final, 1),
+                    "Espesor Numérico": np.nan,
+                    "Espesor Calc. (cm)": "Sin raíz AASHTO" if res_iter["estado"] == "sin_raiz" else res_iter["estado"],
+                    "Espesor Adoptado (cm)": "Criterio mínimo",
+                    "Estado": "ℹ️ No gobierna AASHTO" if res_iter["estado"] == "sin_raiz" else "🚨 Revisar",
+                })
 
             if esp_pulg:
                 esp_cm = esp_pulg * 2.54
-                k_mpa = ki_final / PCI_POR_MPA_M 
-                
+                k_mpa = ki_final / 3.684
+
                 row = {
                     "CBR Suelo (%)": f"{c_val:.1f}%",
                     "k Comb. (pci)": round(ki_final, 1),
@@ -727,7 +865,7 @@ with tab4:
                 }
 
                 if esp_cm <= 25.0:
-                    adoptado = max(float(np.ceil(esp_cm)), 15.0)
+                    adoptado = max(round(esp_cm, 0), 15.0)
                     row["Espesor Calc. (cm)"] = round(esp_cm, 2)
                     row["Espesor Adoptado (cm)"] = adoptado
                     row["Estado"] = "✅ OK"
@@ -739,33 +877,33 @@ with tab4:
                     row["Espesor Calc. (cm)"] = f"Excede ({round(esp_cm,1)})"
                     row["Espesor Adoptado (cm)"] = "> 25cm"
                     row["Estado"] = "🚨 Crítico"
-                
+
                 datos_abaco.append(row)
-        
+
         if datos_abaco:
             df = pd.DataFrame(datos_abaco)
             st.subheader("📋 Tabla de Sensibilidad (Considerando Estructura de Base)")
             st.table(df.drop(columns=["Espesor Numérico"]))
-            
+
             if alerta_detectada:
                 st.warning("""
                 🚨 **ALERTA DE OPTIMIZACIÓN TÉCNICA (Espesor > 23 cm):**
-                Para espesores superiores a 23-25 cm, la metodología AASHTO indica que el diseño se vuelve poco eficiente. 
-                
+                Para espesores superiores a 23-25 cm, la metodología AASHTO indica que el diseño se vuelve poco eficiente.
+
                 **Recomendaciones antes de aumentar el espesor:**
                 1. **Mejorar la Sub-base:** En lugar de una losa más gruesa, considere una sub-base tratada con cemento para elevar el valor de 'k'.
                 2. **Revisar Transferencia de Carga:** Verifique si el uso de dovelas de mayor diámetro puede optimizar el coeficiente 'J'.
-                3. **Resistencia del Concreto:** Evalúe subir el f'c a 280 o 315 kg/cm² para mejorar el Módulo de Ruptura (S'c).
+                3. **Resistencia del Concreto:** Evalúe subir el f'c a 28, 31 o 35 MPa para mejorar el Módulo de Ruptura (S'c).
                 """)
-            
+
             if fuera_de_rango:
                 st.error("⚠️ **LÍMITE EXCEDIDO:** El espesor calculado supera los 25 cm.")
                 st.warning("""
                 **🔍 Recomendaciones de Optimización:**
                 Cuando el espesor calculado resulta tan elevado (ej. > 25 cm), la AASHTO '93 sugiere que el diseño debe optimizarse mediante:
-                
+
                 1. **Mejorar el Valor k:** No diseñe sobre la subrasante natural. Considere una sub-base granular o estabilizada con cemento para alcanzar valores de k cercanos a 250 pci.
-                2. **Incrementar Resistencia (f'c):** Use un concreto de mayor desempeño (f'c 280 o 315 kg/cm²).
+                2. **Incrementar Resistencia (f'c):** Use un concreto de mayor desempeño (f'c 28, 31 o 35 MPa).
                 3. **Verificar Tránsito:** Revise si el número de repeticiones del eje pesado es realista para una subestación.
                 """)
 
