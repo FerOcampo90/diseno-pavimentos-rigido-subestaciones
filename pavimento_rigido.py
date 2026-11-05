@@ -7,11 +7,27 @@ import pandas as pd
 # Conversión exacta de unidades de resistencia
 PSI_POR_MPA = 145.0377377302
 KGFCM2_POR_MPA = 10.1971621298
+# 1 MPa/m = 3.683431... pci (1 pci = 1 psi/in).
+PCI_POR_MPA_M = 1_000_000 * 0.0254 / 6894.757293168
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Diseño Pavimento Rigido - Subestaciones - AASHTO '93", page_icon="🏗️", layout="wide")
 
 # --- FUNCIONES TÉCNICAS ---
+def estimar_k_cbr(cbr):
+    """Correlación empírica CBR-k (Higuera/ASMOD): devuelve (MPa/m, pci).
+
+    El valor es un k NATURAL preliminar, no un k efectivo corregido por
+    condiciones estacionales, estratos rígidos o pérdida de soporte (LS).
+    """
+    if cbr <= 0:
+        raise ValueError("El CBR debe ser mayor que cero")
+    if cbr <= 10.0:
+        k_mpa_m = 2.55 + 52.5 * np.log10(cbr)
+    else:
+        k_mpa_m = 46.0 + 9.08 * np.log10(cbr)**4.34
+    return k_mpa_m, k_mpa_m * PCI_POR_MPA_M
+
 def calcular_w18(tpd, periodo, crecimiento, peso_eje):
     p_patron = 8.2  # Ton (18 kips)
     alfa = 4.0
@@ -60,7 +76,11 @@ def calcular_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k):
     
     for guess in [6, 8, 10, 12, 14, 18]:
         sol, _, ier, _ = fsolve(ecuacion, guess, full_output=True)
-        if ier == 1 and sol[0] > 0: return sol[0]
+        # fsolve puede informar convergencia numérica sin que la ecuación se satisfaga.
+        if ier == 1 and np.isfinite(sol[0]) and sol[0] > 0:
+            residuo = ecuacion(float(sol[0]))
+            if np.isfinite(residuo) and abs(residuo) < 1e-5:
+                return float(sol[0])
     return None
 
 # --- INTERFAZ ---
@@ -71,8 +91,8 @@ with st.expander("📝 Ecuaciones de Diseño (AASHTO 93 & Correlaciones)"):
     st.markdown("**1. Ecuación Estructural AASHTO 93 (Rígido):**")
     st.latex(r" \log_{10}(W_{18}) = Z_R S_0 + 7.35 \log_{10}(D + 1) - 0.06 + \frac{\log_{10}[\Delta PSI / (4.5 - 1.5)]}{1 + \frac{1.624 \times 10^7}{(D + 1)^{8.46}}} + (4.22 - 0.32p_t) \log_{10} \left[ \frac{S'_c C_d (D^{0.75} - 1.132)}{215.63 J \left( D^{0.75} - \frac{18.42}{(E_c/k)^{0.25}} \right)} \right] ")
     
-    st.markdown("**2. Correlación de Módulo de Reacción (k) vs CBR:**")
-    st.latex(r" \text{Si } CBR \leq 10\%: \quad k = 25.5 + 52.5 \log_{10}(CBR) ")
+    st.markdown("**2. Correlación empírica de Módulo de Reacción (k) vs CBR (resultado en MPa/m):**")
+    st.latex(r" \text{Si } CBR \leq 10\%: \quad k = 2.55 + 52.5 \log_{10}(CBR) ")
     st.latex(r" \text{Si } CBR > 10\%: \quad k = 46.0 + 9.08 (\log_{10}(CBR))^{4.34} ")
 
 tab1, tab2, tab3, tab4 = st.tabs(["🚛 Tránsito y Carga", "🧱 Parámetros de Diseño", "📐 Geometría y Juntas", "📊 Ábaco"])
@@ -215,26 +235,33 @@ with tab2:
         if metodo_k == "Correlación AASHTO (CBR)":
             cbr = st.number_input("CBR de la Subrasante (%)", 1.0, 100.0, 3.0, step=0.5, help="Valor de soporte del suelo natural")
             
-            if cbr <= 10:
-                k_natural = 25.5 + 52.5 * np.log10(cbr)
-            else:
-                k_natural = 46.0 + 9.08 * (np.log10(cbr))**4.34
-            
-            st.caption(f"Valor k natural calculado: **{k_natural:.1f} pci**")
-            st.warning("⚠️ **Aviso Técnico:** La correlación CBR–k es una aproximación teórica. Se recomienda validar con **placa de carga**.")
-            
+            k_natural_mpa_m, k_natural = estimar_k_cbr(cbr)
+            st.caption(
+                f"Valor k natural correlacionado: **{k_natural_mpa_m:.2f} MPa/m** "
+                f"= **{k_natural:.1f} pci** (convertido para AASHTO 93)."
+            )
+            st.warning(
+                "⚠️ **k preliminar, no k efectivo de diseño validado:** "
+                "la correlación CBR–k es empírica; comprobar su aplicabilidad, "
+                "ensayo de placa cuando corresponda y correcciones por estratos rígidos, "
+                "estacionalidad y pérdida de soporte (LS). "
+                "Un CBR elevado no justifica automáticamente un k efectivo elevado."
+            )
+
             with st.expander("📝 Ver justificación metodológica"):
                 st.info("""
-                **Criterio de Diseño:** Se utiliza la correlación matemática CBR–k expresada en pci para mantener la coherencia con el modelo empírico de la AASHTO '93. 
-                
-                Gráficos referenciales (como la Fig. 1 de la norma) suelen sobreestimar la capacidad de soporte en subrasantes naturales al no considerar el confinamiento real de la losa. Para un diseño estructural seguro, se prioriza la consistencia con el *AASHTO Road Test*.
+                La correlación empírica CBR–k (Higuera / ASMOD) entrega **k en MPa/m**, no en pci.
+                Para la ecuación estructural AASHTO 93 se convierte a **pci** usando
+                1 MPa/m ≈ 3,6834 pci. El resultado es una estimación del **k natural**;
+                debe evaluarse el módulo efectivo de apoyo según la estructura de pavimento,
+                el perfil geotécnico y la pérdida de soporte.
                 """)
         else:
             col_k1, col_k2 = st.columns(2)
             with col_k1:
-                k_manual_mpa = st.number_input("k del Ensayo (MPa/m)", 10.0, 150.0, 40.0)
+                k_manual_mpa = st.number_input("k del Ensayo (MPa/m)", 1.0, 500.0, 40.0)
             with col_k2:
-                k_natural = k_manual_mpa * 3.684
+                k_natural = k_manual_mpa * PCI_POR_MPA_M
                 st.metric("k Natural (pci)", f"{k_natural:.1f}")
             
             st.success("✅ Usando valor real de ensayo de placa.")
@@ -263,8 +290,15 @@ with tab2:
         else:
             k_diseno = k_natural
             st.metric("Módulo k de Diseño", f"{k_diseno:.1f} pci")
-            st.info("Diseño directo sobre subrasante natural (No recomendado para cargas altas).")
+            st.info("Sin subbase incluida en el modelo. Comprobar que el k empleado represente el apoyo efectivo de la sección real, incluso si existe solado de limpieza.")
 
+        if k_diseno > 500:
+            st.warning(
+                "⚠️ k mayor de 500 pci. Este valor alto procede de una correlación empírica "
+                "o de una estimación de apoyo y NO debe asumirse como módulo efectivo final "
+                "sin comprobación geotécnica, corrección por pérdida de soporte y revisión "
+                "del campo de aplicabilidad de AASHTO 93."
+            )
         k_val = k_diseno
         st.subheader("🔗 Transferencia de Carga (J)")
         
@@ -403,6 +437,13 @@ with tab2:
             st.toast("✅ Cálculo realizado y datos guardados correctamente.")
             st.success(f"### Espesor de Losa Recomendado: {esp_final_cm:.1f} cm")
             st.info(f"*(Valor exacto AASHTO: {esp_exacto_cm:.2f} cm | k diseño: {k_val:.1f} pci)*")
+        else:
+            st.error(
+                "No se obtuvo una raíz numérica válida de la ecuación AASHTO 93 "
+                "para estos parámetros. Revisar el módulo k efectivo, el rango de "
+                "aplicabilidad y el resto de las entradas; no se adoptará un espesor "
+                "calculado ficticio."
+            )
 
 with tab3:
     st.header("📐 Recomendaciones Geométricas y Modulación")
@@ -664,10 +705,7 @@ with tab4:
         esp_base_sim = st.session_state.get('esp_base_guardado', 0)
 
         for c_val in rango_cbr:
-            if c_val <= 10:
-                k_nat_iter = 25.5 + 52.5 * np.log10(c_val)
-            else:
-                k_nat_iter = 46.0 + 9.08 * (np.log10(c_val))**4.34
+            _, k_nat_iter = estimar_k_cbr(c_val)
             
             if usa_base_sim:
                 ki_final = calcular_k_combinado(k_nat_iter, esp_base_sim, tipo_base_sim)
@@ -680,7 +718,7 @@ with tab4:
 
             if esp_pulg:
                 esp_cm = esp_pulg * 2.54
-                k_mpa = ki_final / 3.684 
+                k_mpa = ki_final / PCI_POR_MPA_M 
                 
                 row = {
                     "CBR Suelo (%)": f"{c_val:.1f}%",
@@ -689,7 +727,7 @@ with tab4:
                 }
 
                 if esp_cm <= 25.0:
-                    adoptado = max(round(esp_cm, 0), 15.0)
+                    adoptado = max(float(np.ceil(esp_cm)), 15.0)
                     row["Espesor Calc. (cm)"] = round(esp_cm, 2)
                     row["Espesor Adoptado (cm)"] = adoptado
                     row["Estado"] = "✅ OK"
