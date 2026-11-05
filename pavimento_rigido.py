@@ -190,6 +190,229 @@ def calcular_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k):
     r = resolver_espesor_aashto(w18, zr, s0, p0, pt, sc, cd, j, ec, k)
     return r["D_pulg"] if r["estado"] == "ok" else None
 
+# =========================================================
+# [MÓDULO k AASHTO 93] Determinación del módulo de reacción efectivo
+# Referencias:
+#  [R1] AASHTO (1993). Guide for Design of Pavement Structures. Parte II, Cap. 3, sec. 3.2
+#       (k = MR/19.4 sin subbase; Fig. 3.3 k compuesto; Fig. 3.4 estrato rígido; Fig. 3.5 daño relativo;
+#       Fig. 3.6 pérdida de soporte; Tabla 2.7 rangos de LS).
+#  [R2] FHWA NHI-05-037 (2006). Geotechnical Aspects of Pavements, sec. 5.4.6, Ecs. 5.20–5.24,
+#       Tabla 5-45 (LS). Ecs. 5.22–5.23 = regresiones de AASHTO (1986) Apéndice LL.
+#  [R3] García Aladín, Pérez Ruíz, Serrano Guzmán & Noguera Calvache (2024). Desarrollo de ecuaciones
+#       sustitutivas ... Revista Eduweb 18(1), 9-23. doi:10.46502/issn.1856-7576/2024.18.01.1
+#       (regresiones de la Fig. 3.6 por LS, digitalizadas para keff = 5–2000 pci; interpolación lineal
+#       entre líneas LS empleada en su ejemplo resuelto, LS = 1.67).
+#  [R4] Powell, Potter, Mayhew & Nunn (1984). TRRL LR 1132 (E = 17.6·CBR^0.64 MPa, 2 ≤ CBR ≤ 12);
+#       NCHRP 1-37A (2004): MR = 2555·CBR^0.64 psi.
+# =========================================================
+PSI_POR_MPA = 145.0377
+PULG_POR_CM = 1 / 2.54
+
+# Solo correlaciones con fuente primaria identificada y rango declarado
+CORRELACIONES_MR = {
+    "AASHTO 93 (Heukelom-Klomp): MR = 1500·CBR": {
+        "ref": "[R1] AASHTO 1993, Parte I, sec. 1.5; suelos finos con CBR saturado ≤ 10 %",
+        "cbr_min": 0.0, "cbr_max": 10.0,
+        "f": lambda c: 1500.0 * c},
+    "TRRL / NCHRP 1-37A: MR = 2555·CBR^0.64": {
+        "ref": "[R4] Powell et al. 1984 (17.6·CBR^0.64 MPa), rango de calibración 2 ≤ CBR ≤ 12 %; adoptada en NCHRP 1-37A",
+        "cbr_min": 2.0, "cbr_max": 12.0,
+        "f": lambda c: 2555.0 * c**0.64},
+}
+
+ESTRUCTURAS = ["Losa directamente sobre subrasante",
+               "Losa sobre subbase granular",
+               "Losa sobre base tratada con cemento",
+               "Losa sobre otra capa de apoyo (propiedades manuales)"]
+
+# Tabla 2.7 AASHTO 93 / Tabla 5-45 FHWA: rangos de LS (y de E) por material de apoyo de la losa
+TABLA_LS = {
+    "Base granular tratada con cemento (E = 1.000.000–2.000.000 psi)": (0.0, 1.0),
+    "Mezclas de agregado-cemento (E = 500.000–1.000.000 psi)": (0.0, 1.0),
+    "Base tratada con asfalto (E = 350.000–1.000.000 psi)": (0.0, 1.0),
+    "Mezclas estabilizadas bituminosas (E = 40.000–300.000 psi)": (0.0, 1.0),
+    "Estabilizado con cal (E = 20.000–70.000 psi)": (1.0, 3.0),
+    "Materiales granulares no tratados (E = 15.000–45.000 psi)": (1.0, 3.0),
+    "Suelo fino o subrasante natural (E = 3.000–40.000 psi)": (2.0, 3.0),
+}
+_MAT = list(TABLA_LS.keys())
+# Rangos de módulo E de la misma Tabla 2.7 (psi): guía para ESB cuando no hay ensayo
+TABLA_E = dict(zip(_MAT, [(1.0e6, 2.0e6), (5.0e5, 1.0e6), (3.5e5, 1.0e6), (4.0e4, 3.0e5),
+                          (2.0e4, 7.0e4), (1.5e4, 4.5e4), (3.0e3, 4.0e4)]))
+# Materiales de la Tabla 2.7 que corresponden a cada tipo de capa de apoyo
+MATERIALES_CAPA = {"Losa sobre subbase granular": [_MAT[5], _MAT[4]],
+                   "Losa sobre base tratada con cemento": [_MAT[0], _MAT[1]],
+                   "Losa sobre otra capa de apoyo (propiedades manuales)": _MAT}
+# Orientación para ubicar LS dentro del intervalo de la Tabla 2.7 (factores que AASHTO 93 asocia a LS:
+# erosión del material de apoyo y movimientos verticales diferenciales del suelo)
+ORIENTACION_LS = {
+    "Erosión baja → límite inferior del intervalo": (0.0,
+        "material de apoyo no erosionable (tratado/estabilizado) o granular limpio bien compactado; drenaje bueno "
+        "(Cd ≥ 1,0); sin suelos expansivos ni colapsables; bombeo no esperado"),
+    "Erosión moderada → valor medio del intervalo": (0.5,
+        "condiciones intermedias: algo de finos en el apoyo o drenaje regular; tránsito pesado ocasional en juntas"),
+    "Erosión alta → límite superior del intervalo": (1.0,
+        "finos erosionables bajo la losa, drenaje deficiente (Cd < 1,0), juntas sin pasadores con tránsito pesado frecuente, "
+        "bombeo esperado o asentamientos/expansiones diferenciales"),
+}
+MATERIAL_LS_POR_ESTRUCTURA = {ESTRUCTURAS[0]: _MAT[6], ESTRUCTURAS[1]: _MAT[5], ESTRUCTURAS[2]: _MAT[0], ESTRUCTURAS[3]: _MAT[5]}
+
+# Puntos digitalizados de la Fig. 3.6 publicados en [R3] (Tabla 1): keff -> k corregido (pci)
+NOMOGRAMA_LS_PUNTOS = {
+    1: [(5, 3.395), (10, 5.82), (100, 39.93), (500, 162.26), (1000, 274.425), (2000, 500)],
+    2: [(5, 2.35), (10, 3.63), (100, 16.65), (500, 44.90), (1000, 68.68), (2000, 114.89)],
+    3: [(5, 1.625), (10, 2.3065), (100, 7.772), (500, 19.115), (1000, 27.736), (2000, 39.95)],
+}
+LS_COEF = {1: (0.8311, -0.0643), 2: (0.6408, -0.0834), 3: (0.538, -0.1806)}  # [R3] Ecs. 2–4
+
+
+def _linea_ls(keff, n):
+    if n == 0:
+        return keff
+    a, b = LS_COEF[n]
+    return 10 ** (a * np.log10(keff) + b)
+
+
+def k_corregido_ls(keff, ls):
+    """Corrección por pérdida de soporte (Fig. 3.6). LS entero: línea del nomograma ([R3] Ecs. 1–4).
+    LS no entero: interpolación lineal en k entre las líneas adyacentes, procedimiento del ejemplo
+    resuelto de [R3] (LS = 1.67: 189 y 53 pci -> 98 pci). Se aplica UNA sola vez."""
+    ls = float(ls)
+    lo, hi = int(np.floor(ls)), int(np.ceil(ls))
+    if lo == hi:
+        return _linea_ls(keff, lo)
+    k_lo, k_hi = _linea_ls(keff, lo), _linea_ls(keff, hi)
+    return k_lo + (ls - lo) * (k_hi - k_lo)
+
+
+def k_compuesto_subbase(mr_psi, dsb_pulg, esb_psi):
+    """k∞ compuesto (Fig. 3.3), [R2] Ec. 5.22. Unidades: psi, pulg -> pci."""
+    l_d, l_e, l_m = np.log(dsb_pulg), np.log(esb_psi), np.log(mr_psi)
+    return float(np.exp(-2.807 + 0.1253 * l_d**2 + 1.062 * l_m + 0.1282 * l_d * l_e
+                        - 0.4114 * l_d - 0.0581 * l_e - 0.1317 * l_d * l_m))
+
+
+def k_estrato_rigido(k_inf, mr_psi, dsg_pulg):
+    """Corrección por estrato rígido a < 10 ft (Fig. 3.4). Forma con ln(DSG)·ln(MR) ([R3] Ec. 8),
+    contrastada con el ejemplo de la Fig. 3.4 (MR = 4000 psi, DSG = 5 ft, k∞ = 230 pci -> ≈300 pci).
+    Nota: el texto de [R2] Ec. 5.23 muestra ln(DSB) en ese término; esa forma no reproduce el ejemplo."""
+    l_g, l_m = np.log(dsg_pulg), np.log(mr_psi)
+    return float(np.exp(5.303 + 0.0710 * l_g * l_m + 1.366 * np.log(k_inf) - 0.9187 * l_g - 0.6837 * l_m))
+
+
+def dano_relativo(k_pci, d_pulg):
+    """Daño relativo (Fig. 3.5), [R2] Ec. 5.24: ur = (D^0.75 − 0.39·k^0.25)^3.42."""
+    base = d_pulg**0.75 - 0.39 * k_pci**0.25
+    return base**3.42 if base > 0 else np.nan
+
+
+def k_desde_dano(ur, d_pulg):
+    """Inversa de la Ec. 5.24: k efectivo para el daño relativo promedio."""
+    return ((d_pulg**0.75 - ur**(1 / 3.42)) / 0.39)**4
+
+
+def determinar_k_aashto(estructura, mr_estaciones_psi, d_proy_pulg, dsb_pulg=None, esb_psi=None,
+                        k_placa_pci=None, estrato="No existe a < 3 m (según estudio geotécnico)", dsg_pulg=None,
+                        k_inf_manual=None, k_rf_manual=None, placa_sobre_capa=False):
+    """
+    Pasos [R1] sec. 3.2: k inicial -> k∞ compuesto -> corrección por estrato rígido -> daño relativo -> keff
+    (ANTES de LS; la corrección LS se aplica aparte, una sola vez).
+    Devuelve dict con filas por periodo, keff, origen de cada paso, pendientes y advertencias.
+    """
+    out = {"filas": [], "pendientes": [], "advertencias": [], "keff": None,
+           "origen": {"k_ini": "No aplica", "k_inf": "No aplica", "k_rf": "No aplica"}}
+    con_capa = estructura != ESTRUCTURAS[0]
+    if con_capa and k_inf_manual is None and not (k_placa_pci and placa_sobre_capa) and (not dsb_pulg or not esb_psi):
+        out["pendientes"].append("Faltan espesor o módulo de la capa de apoyo.")
+        return out
+    if (k_inf_manual is not None or k_rf_manual is not None) and len(mr_estaciones_psi) > 1:
+        out["advertencias"].append("Valor manual de nomograma aplicado igual a todos los periodos estacionales.")
+    urs = []
+    for i, mr in enumerate(mr_estaciones_psi):
+        # 1. k inicial de la subrasante
+        if k_placa_pci and not placa_sobre_capa:
+            k_ini = k_placa_pci
+            out["origen"]["k_ini"] = "Ensayo de placa sobre subrasante"
+            mr_eq = 19.4 * k_ini if mr is None else mr     # relación k = MR/19.4 [R1] invertida
+        elif mr:
+            k_ini = mr / 19.4
+            out["origen"]["k_ini"] = "Calculado: k = MR/19.4 [R1]"
+            mr_eq = mr
+        else:
+            k_ini, mr_eq = None, None
+        # 2. k compuesto
+        if k_inf_manual is not None:
+            k_inf = k_inf_manual
+            out["origen"]["k_inf"] = "Manual (nomograma / fuente externa)"
+        elif k_placa_pci and placa_sobre_capa:
+            k_inf = k_placa_pci
+            out["origen"]["k_inf"] = "Ensayo de placa sobre la capa de apoyo"
+        elif con_capa:
+            k_inf = k_compuesto_subbase(mr_eq, dsb_pulg, esb_psi)
+            out["origen"]["k_inf"] = "Calculado: Ec. 5.22 (Fig. 3.3) [R2]"
+            if estructura == ESTRUCTURAS[1]:
+                if not (15000 <= esb_psi <= 50000):
+                    out["advertencias"].append(f"ESB = {esb_psi:,.0f} psi fuera de 15.000–50.000 psi para subbase granular ([R2] Ec. 5.20).")
+                if esb_psi > 4 * mr_eq:
+                    out["advertencias"].append(f"ESB > 4·MR ([R2] Ec. 5.21): reduzca ESB.")
+            if esb_psi < mr_eq:
+                out["advertencias"].append("ESB < MR: la capa de apoyo es menos rígida que la subrasante; la Ec. 5.22 "
+                                           "reduce k∞ respecto de MR/19.4. Verifique datos o use valor manual del nomograma.")
+            if estructura in (ESTRUCTURAS[2], ESTRUCTURAS[3]):
+                out["advertencias"].append("Ec. 5.22 aplicada a una capa tratada/otra: confirme el resultado contra la Fig. 3.3 "
+                                           "(o ingrese el valor leído) antes de usarlo como sustentado.")
+        else:
+            k_inf = k_ini
+            out["origen"]["k_inf"] = "No aplica (sin capa de apoyo): k∞ = k inicial"
+        # 3. estrato rígido
+        k_rf = k_inf
+        if k_rf_manual is not None:
+            k_rf = k_rf_manual
+            out["origen"]["k_rf"] = "Manual (Fig. 3.4 / fuente externa)"
+        elif estrato.startswith("Existe"):
+            if dsg_pulg and dsg_pulg < 120 and mr_eq:
+                k_rf = k_estrato_rigido(k_inf, mr_eq, dsg_pulg)
+                out["origen"]["k_rf"] = "Calculado: ecuación de la Fig. 3.4 [R3] Ec. 8"
+            else:
+                out["pendientes"].append("Estrato rígido declarado sin DSG o sin MR: corrección (Fig. 3.4) pendiente.")
+                out["origen"]["k_rf"] = "PENDIENTE"
+        elif estrato.startswith("Sin verificar"):
+            out["pendientes"].append("Profundidad de estrato rígido NO verificada: corrección Fig. 3.4 pendiente.")
+            out["origen"]["k_rf"] = "PENDIENTE"
+        ur = dano_relativo(k_rf, d_proy_pulg)
+        urs.append(ur)
+        out["filas"].append({"Periodo": i + 1, "MR (psi)": round(mr_eq) if mr_eq else None,
+                             "MR (MPa)": round(mr_eq / PSI_POR_MPA, 1) if mr_eq else None,
+                             "k inicial (pci)": round(k_ini, 1) if k_ini else None,
+                             "k∞ (pci)": round(k_inf, 1), "k estrato (pci)": round(k_rf, 1), "ur": round(ur, 2)})
+    out["pendientes"] = list(dict.fromkeys(out["pendientes"]))
+    out["advertencias"] = list(dict.fromkeys(out["advertencias"]))
+    if any(np.isnan(u) for u in urs):
+        out["pendientes"].append("k fuera del rango de la Fig. 3.5 para el espesor proyectado.")
+        return out
+    ur_m = float(np.mean(urs))
+    out["ur_medio"] = ur_m
+    out["keff"] = k_desde_dano(ur_m, d_proy_pulg)
+    return out
+
+
+def verificar_espesor(res_solver, h_proy_cm, pendientes=(), condicionantes=()):
+    """
+    CUMPLE: espesor requerido <= h de proyecto. NO CUMPLE: requerido > h de proyecto.
+    NO CONCLUYENTE: sin raíz, fuera de aplicabilidad o condiciones pendientes.
+    Una ecuación sin raíz NUNCA se interpreta como cumplimiento.
+    """
+    if res_solver["estado"] != "ok":
+        return "NO CONCLUYENTE", f"ecuación sin solución válida ({res_solver['estado']})"
+    d_cm = res_solver["D_pulg"] * 2.54
+    base = "CUMPLE" if d_cm <= h_proy_cm + 1e-9 else "NO CUMPLE"
+    if pendientes:
+        return "NO CONCLUYENTE", f"indicativo: {base} ({d_cm:.2f} cm vs {h_proy_cm:.1f} cm); hay condiciones pendientes"
+    if condicionantes:
+        return base, f"{d_cm:.2f} cm vs {h_proy_cm:.1f} cm; condicionado a: " + "; ".join(condicionantes)
+    return base, f"{d_cm:.2f} cm vs {h_proy_cm:.1f} cm"
+
+
 # --- INTERFAZ ---
 st.title("🏗️ Diseñador Pavimento Rigido - Subestaciones")
 
@@ -204,13 +427,54 @@ with st.expander("📝 Ecuaciones de Diseño (AASHTO 93 & Correlaciones)"):
     st.latex(r" k\,[\mathrm{pci}] = 3.684 \cdot k\,[\mathrm{MPa/m}] ")
     st.caption("El k que entra en la ecuación AASHTO 93 es el **k efectivo de diseño (pci)**, definido de forma independiente en 'Parámetros de Diseño'.")
 
-tab1, tab2, tab3, tab4 = st.tabs(["🚛 Tránsito y Carga", "🧱 Parámetros de Diseño", "📐 Geometría y Juntas", "📊 Ábaco"])
+# =========================================================
+# [AJUSTE FINAL] Perfil de proyecto: fija solo los valores INICIALES de los widgets.
+# Todos los parámetros siguen siendo editables para otros proyectos.
+# =========================================================
+PERFILES = {
+    # Perfil general (Colombia, Perú u otro país): valores típicos, todos editables
+    "Genérico (Colombia, Perú u otro país)": {
+        "tpd": 5, "cbr": 8.0, "usar_base": True, "idx_j": 0, "idx_fc": 4, "idx_pav": 0,
+        "solado_cm": 0.0, "idx_origen_k": 0, "k_efectivo": 100.0,
+        # Módulo k AASHTO 93
+        "k_estructura": 1, "k_dsb_cm": 15.0, "k_esb_psi": 25000.0, "k_idx_fuente": 0,
+        "k_idx_estrato": 0, "k_dsg_m": 2.0, "k_idx_mat_ls": 5, "k_ls": 1, "h_proy_cm": 20.0, "k_idx_modo_ls": 1,
+        "fc_solado": 14.0, "suelo": "", "cbr_cond": "", "doc_geo": "", "plano": "",
+        "ls_just": "",
+    },
+    "Hanaqpampa 220/33 kV (Perú)": {
+        "tpd": 6,            # -> W18 = 177,296 ESAL (25 años, eje 11 t, sin crecimiento)
+        "cbr": 68.9,
+        "usar_base": False,  # sin subbase granular convencional
+        "idx_j": 3,          # Escenario 4: sin pasadores y sin bermas (J = 4.20)
+        "idx_fc": 4,         # 35 MPa
+        "idx_pav": 3,        # factor S'c = 8.0
+        "solado_cm": 5.0,    # solado de concreto pobre (sin aporte estructural)
+        "idx_origen_k": 0,   # k por procedimiento AASHTO 93 (pestaña Módulo k)
+        "k_efectivo": 173.5, # solo para la opción manual: HIPÓTESIS PROVISIONAL sin respaldo
+        "k_estructura": 0,   # losa directamente sobre subrasante (el solado no se modela como subbase)
+        "k_dsb_cm": 15.0, "k_esb_psi": 25000.0,
+        "k_idx_fuente": 1,   # sin ensayo de MR/placa: TRRL/NCHRP como referencia (CBR 68.9 % fuera de rango -> NO CONCLUYENTE)
+        "k_idx_estrato": 0,  # corrección por estrato rígido no considerada (opcional en la app)
+        "k_idx_modo_ls": 0,  # erosión baja -> límite inferior del intervalo
+        "k_dsg_m": 1.5, "k_idx_mat_ls": 6, "k_ls": 2, "h_proy_cm": 15.0,
+        "fc_solado": 14.0, "suelo": "GP (grava mal gradada)",
+        "cbr_cond": "CBR al 95 % de compactación; muestra a 0,80 m",
+        "doc_geo": "EEP-HANQ-SEH-CV-ETC-1038", "plano": "EEP-HANQ-SEH-CV-DRW-1049",
+        "ls_just": "Losa apoyada (vía solado sin función estructural) sobre subrasante natural GP.",
+    },
+}
+perfil_sel = st.selectbox("📁 Perfil de proyecto (valores iniciales, todos editables):", list(PERFILES.keys()), index=0)
+P = PERFILES[perfil_sel]
+
+tab1, tab_k, tab2, tab3, tab4 = st.tabs(["🚛 Tránsito y Carga", "🪨 Módulo k (AASHTO 93)", "🧱 Parámetros de Diseño",
+                                         "📐 Geometría y Juntas", "📊 Ábaco"])
 
 with tab1:
     st.header("Análisis de Tránsito (Eje Crítico)")
     c1, c2 = st.columns(2)
     with c1:
-        tpd = st.number_input("TPD (Vehículos pesados/día)", min_value=1, value=5, step=1)
+        tpd = st.number_input("TPD (Vehículos pesados/día)", min_value=1, value=P["tpd"], step=1)
         periodo = st.number_input("Periodo de diseño (años)", min_value=1, value=25, step=1)
         tasa = st.number_input("Tasa de crecimiento (%)", min_value=0.0, value=0.0, step=0.1)
     with c2:
@@ -222,6 +486,234 @@ with tab1:
 
     if w18_total < 200000:
         st.warning("⚠️ **Nota Técnica:** El tránsito acumulado es bajo para el rango de aplicación original de AASHTO 93. El espesor obtenido está gobernado por criterios mínimos constructivos.")
+
+# =========================================================
+# [MÓDULO k AASHTO 93] Pestaña de determinación del k efectivo (entradas y pasos)
+# =========================================================
+with tab_k:
+    st.header("🪨 Determinación del módulo de reacción efectivo – AASHTO 1993")
+    st.caption("Procedimiento AASHTO 1993, Parte II, sec. 3.2: k inicial → k∞ compuesto según el apoyo → corrección por "
+               "estrato rígido → daño relativo (Fig. 3.5) → keff → corrección por pérdida de soporte LS (una sola vez). "
+               "Unidades internas: MR y E en psi, espesores en pulgadas, k en pci (1 MPa/m = 3.684 pci; 1 MPa = 145.04 psi).")
+    ck1, ck2 = st.columns(2)
+
+    with ck1:
+        st.subheader("A. Propiedades de la subrasante")
+        cbr_medido = st.number_input("CBR medido (%)", 1.0, 100.0, P["cbr"], step=0.1, key=f"k_cbr_{perfil_sel}")
+        cbr_cond = st.text_input("Condición del ensayo (compactación, saturación, profundidad)", P["cbr_cond"])
+        clas_suelo = st.text_input("Clasificación del suelo (SUCS / AASHTO)", P["suelo"])
+        # [AJUSTE] El ensayo es opcional: si no se dispone, se estima MR con una correlación documentada
+        _tipo_dato = st.radio("¿Se dispone de un ensayo en el nivel de apoyo de la losa?",
+                              ["No — estimar MR a partir del CBR (correlación)",
+                               "Sí — ensayo de módulo resiliente (MR)",
+                               "Sí — ensayo de placa de carga (k)"], index=0, key=f"tipo_dato_{perfil_sel}")
+        if _tipo_dato.startswith("No"):
+            fuente_mr = st.selectbox("Correlación MR–CBR:", list(CORRELACIONES_MR.keys()),
+                                     index=min(P["k_idx_fuente"], len(CORRELACIONES_MR) - 1))
+            st.caption("Cuando se disponga del ensayo, selecciónelo arriba: reemplaza a la correlación.")
+        elif "módulo resiliente" in _tipo_dato:
+            fuente_mr = "Ensayo de módulo resiliente (MR medido)"
+        else:
+            fuente_mr = "Ensayo de placa de carga (k medido)"
+        mr_fuera_rango, mr_hipotesis, k_placa_pci, mr_psi, placa_sobre_capa = False, False, None, None, False
+        mr_origen = ""
+        if fuente_mr in CORRELACIONES_MR:
+            corr = CORRELACIONES_MR[fuente_mr]
+            mr_psi = corr["f"](cbr_medido)
+            mr_origen = f"Calculado: {fuente_mr} — {corr['ref']}"
+            st.caption(f"Fuente: {corr['ref']}")
+            if not (corr["cbr_min"] <= cbr_medido <= corr["cbr_max"]):
+                mr_fuera_rango = True
+                st.error(f"🚨 CBR = {cbr_medido:.1f} % FUERA del rango de validez de la correlación "
+                         f"({corr['cbr_min']:.0f}–{corr['cbr_max']:.0f} %). MR = {mr_psi:,.0f} psi es una EXTRAPOLACIÓN: "
+                         "no apta para sustentar el diseño. Use un ensayo de MR o de placa.")
+        elif fuente_mr.startswith("Ensayo de módulo"):
+            mr_mpa_in = st.number_input("MR medido (MPa) – AASHTO T 307 o norma nacional equivalente", 5.0, 1000.0, 60.0)
+            mr_psi = mr_mpa_in * PSI_POR_MPA
+            mr_origen = "Ingresado: ensayo de módulo resiliente"
+        else:
+            k_placa_mpa = st.number_input("k de placa medido (MPa/m)", 5.0, 500.0, 40.0)
+            k_placa_pci = k_placa_mpa * FACTOR_MPA_M_A_PCI
+            placa_sobre_capa = st.radio("Ensayo de placa ejecutado sobre:", ["La subrasante", "La capa de apoyo terminada"],
+                                        horizontal=True) == "La capa de apoyo terminada"
+            mr_origen = "Ingresado: ensayo de placa" + (" sobre la capa de apoyo (k∞ directo)" if placa_sobre_capa
+                                                        else " sobre subrasante (MR equivalente = 19.4·k [R1])")
+            st.caption("k de placa estático. Verifique diámetro de placa (30 in en AASHTO T 222) y condición de humedad del ensayo.")
+        if mr_psi:
+            st.metric("Módulo resiliente MR", f"{mr_psi:,.0f} psi", delta=f"{mr_psi / PSI_POR_MPA:,.1f} MPa", delta_color="off")
+            if mr_psi > 20000:
+                st.warning("⚠️ MR > 20.000 psi: por encima de la escala habitual de los nomogramas AASHTO (Figs. 3.3 y 3.4). "
+                           "Las ecuaciones de regresión se aplican fuera del rango graficado.")
+        if _tipo_dato.startswith("No"):
+            cbr_repr = st.checkbox("El CBR es representativo del nivel REAL de apoyo de la losa (verificado en el estudio geotécnico)",
+                                   value=False)
+        else:
+            cbr_repr = True  # el ensayo se declara ejecutado en el nivel de apoyo de la losa
+
+    with ck2:
+        st.subheader("B. Configuración de la estructura")
+        estructura = st.radio("Apoyo de la losa:", ESTRUCTURAS, index=P["k_estructura"])
+        _ke = f"{perfil_sel}_{ESTRUCTURAS.index(estructura)}"
+        dsb_pulg_k, esb_psi_k, nombre_capa, k_inf_manual, k_inf_man_origen = None, None, "", None, ""
+        esb_guia, mat_capa = False, None
+        if estructura != ESTRUCTURAS[0]:
+            if estructura == ESTRUCTURAS[3]:
+                nombre_capa = st.text_input("Descripción de la capa de apoyo", "", key=f"nom_{_ke}")
+            dsb_cm_k = st.number_input("Espesor de la capa DSB (cm)", 5.0, 60.0, P["k_dsb_cm"], step=1.0, key=f"dsb_{_ke}")
+            dsb_pulg_k = dsb_cm_k * PULG_POR_CM
+            # [AJUSTE] Guía de ESB por material (Tabla 2.7) o valor manual
+            _ops_mat = MATERIALES_CAPA[estructura]
+            mat_capa = st.selectbox("Material de la capa (Tabla 2.7 AASHTO 93):", _ops_mat, key=f"matc_{_ke}")
+            _emin, _emax = TABLA_E[mat_capa]
+            modo_esb = st.radio("Valor de ESB:", ["Guía: límite inferior (conservador)", "Guía: valor medio",
+                                                  "Guía: límite superior", "Manual (ensayo o especificación)"],
+                                key=f"modo_esb_{_ke}")
+            if modo_esb.startswith("Manual"):
+                esb_psi_k = st.number_input("ESB (psi)", 3000.0, 3000000.0, float(_emin), step=1000.0, key=f"esb_{_ke}")
+                esb_origen = st.text_input("Origen del ESB (ensayo, especificación técnica, informe)", "", key=f"esbo_{_ke}")
+                esb_guia = False
+            else:
+                esb_psi_k = {"Guía: límite inferior (conservador)": _emin, "Guía: valor medio": (_emin + _emax) / 2,
+                             "Guía: límite superior": _emax}[modo_esb]
+                esb_origen = f"Guía del programa: Tabla 2.7 AASHTO 93, {mat_capa.split(' (')[0]} — {modo_esb.split(': ')[1]}"
+                esb_guia = True
+            st.caption(f"DSB = {dsb_pulg_k:.2f} pulg | ESB = {esb_psi_k:,.0f} psi = {esb_psi_k / PSI_POR_MPA:,.0f} MPa "
+                       f"| Rango Tabla 2.7: {_emin:,.0f}–{_emax:,.0f} psi")
+            if esb_guia:
+                st.info("ESB de **referencia** (rango típico de la Tabla 2.7), no medido: el resultado queda condicionado a "
+                        "confirmarlo con ensayo o especificación del material.")
+            elif not (_emin <= esb_psi_k <= _emax):
+                st.warning("ESB fuera del rango de la Tabla 2.7 para el material seleccionado.")
+            if st.checkbox("Ingresar k∞ leído en la Fig. 3.3 u obtenido de otra fuente (en lugar de la Ec. 5.22)",
+                           value=(estructura == ESTRUCTURAS[3]), key=f"kinfm_{_ke}"):
+                k_inf_manual = st.number_input("k∞ compuesto (pci)", 20.0, 3000.0, 300.0, step=5.0, key=f"kinfv_{_ke}")
+                k_inf_man_origen = st.text_input("Origen del valor (figura, lectura, informe)", "", key=f"kinfo_{_ke}")
+        else:
+            esb_origen = ""
+        esp_solado_k = st.number_input("Solado de concreto pobre bajo la losa (cm)", 0.0, 15.0, P["solado_cm"], step=1.0, key=f"k_solado_{perfil_sel}")
+        fc_solado = st.number_input("f'c del solado (MPa)", 5.0, 30.0, P["fc_solado"], step=1.0)
+        if esp_solado_k > 0:
+            st.info(f"ℹ️ **Simplificación:** el solado de {esp_solado_k:.0f} cm (f'c = {fc_solado:.0f} MPa) es una capa de limpieza: "
+                    "NO se modela como capa de apoyo ni se le asigna capacidad estructural. Si se quiere considerar, "
+                    "selecciónelo explícitamente como 'otra capa de apoyo' con sus propiedades.")
+
+        st.subheader("C. Estrato rígido o roca cercana")
+        estrato = st.radio("Estrato rígido (roca o capa muy rígida) a menos de 3 m (10 ft) del nivel de apoyo:",
+                           ["No se considera (no hay estrato rígido a < 3 m)",
+                            "Existe a < 3 m (indicar profundidad DSG)"], index=P["k_idx_estrato"],
+                           help="Corrección opcional de la Fig. 3.4 AASHTO 93. Solo se aplica si el estudio geotécnico identifica "
+                                "un estrato rígido a menos de 3 m.")
+        dsg_pulg_k, k_rf_manual, k_rf_man_origen = None, None, ""
+        if estrato.startswith("Existe"):
+            dsg_m_k = st.number_input("DSG: profundidad desde el nivel de apoyo hasta el estrato rígido (m)", 0.3, 3.0, P["k_dsg_m"], step=0.1)
+            dsg_pulg_k = dsg_m_k * 100 * PULG_POR_CM
+            st.caption(f"DSG = {dsg_pulg_k:.1f} pulg. Ecuación de la Fig. 3.4 con ln(DSG)·ln(MR), "
+                       "comprobada con el ejemplo de la Guía (230 → ≈300 pci).")
+            if st.checkbox("Ingresar k corregido leído en la Fig. 3.4 (en lugar de la ecuación)", value=False):
+                k_rf_manual = st.number_input("k corregido por estrato rígido (pci)", 20.0, 3000.0, 300.0, step=5.0)
+                k_rf_man_origen = st.text_input("Origen del valor (Fig. 3.4)", "")
+
+        st.subheader("Daño relativo (Fig. 3.5)")
+        h_proy_cm = st.number_input("Espesor de losa de proyecto a verificar (cm)", 10.0, 45.0, P["h_proy_cm"], step=0.5)
+        estacional = st.checkbox("Considerar variación estacional del MR (factores por periodo)", value=False)
+        factores = [1.0]
+        if estacional:
+            df_fac = st.data_editor(pd.DataFrame({"Periodo": [f"P{i+1}" for i in range(12)], "Factor MR": [1.0] * 12}),
+                                    num_rows="dynamic", hide_index=True, key=f"k_factores_{perfil_sel}")
+            factores = [float(f) for f in df_fac["Factor MR"].dropna() if float(f) > 0] or [1.0]
+        else:
+            st.caption("Una sola estación representativa: keff = k (la Fig. 3.5 no modifica el valor).")
+
+    # --- Cálculo de pasos A–C ---
+    if mr_psi:
+        _mrs = [mr_psi * f for f in factores]
+    elif k_placa_pci and not placa_sobre_capa:
+        _mrs = [19.4 * k_placa_pci * f for f in factores]
+    else:
+        _mrs = [None]
+    res_k = determinar_k_aashto(estructura, _mrs, h_proy_cm * PULG_POR_CM, dsb_pulg_k, esb_psi_k,
+                                k_placa_pci, estrato, dsg_pulg_k, k_inf_manual, k_rf_manual, placa_sobre_capa)
+
+    st.divider()
+    st.subheader("D. Pérdida de soporte LS (Tabla 2.7 y Fig. 3.6)")
+    cl1, cl2 = st.columns(2)
+    with cl1:
+        _mat_def = mat_capa if mat_capa else MATERIAL_LS_POR_ESTRUCTURA[estructura]
+        if estructura == ESTRUCTURAS[0]:
+            _mat_def = _MAT[P["k_idx_mat_ls"]] if P["k_estructura"] == 0 else _mat_def
+        mat_ls = st.selectbox("Material sobre el que apoya la losa (Tabla 2.7):", _MAT, index=_MAT.index(_mat_def),
+                              key=f"mat_{_ke}_{mat_capa}")
+        ls_min, ls_max = TABLA_LS[mat_ls]
+        st.caption(f"Intervalo AASHTO para este material: LS = {ls_min:.1f} – {ls_max:.1f}")
+        # [AJUSTE] Criterio guiado por erosionabilidad o manual
+        _ops_ls = list(ORIENTACION_LS.keys()) + ["Manual (valor y justificación propios)"]
+        modo_ls = st.selectbox("Criterio para fijar LS dentro del intervalo:", _ops_ls, index=P["k_idx_modo_ls"], key=f"modo_ls_{_ke}")
+        if modo_ls.startswith("Manual"):
+            ls_def = st.slider("LS de diseño (dentro del intervalo)", ls_min, ls_max,
+                               float(min(max(P["k_ls"], ls_min), ls_max)), step=0.1, key=f"ls_{_ke}_{mat_ls}")
+        else:
+            _frac, _desc_ls = ORIENTACION_LS[modo_ls]
+            ls_def = round(ls_min + _frac * (ls_max - ls_min), 1)
+            st.info(f"LS = **{ls_def:.1f}**. Corresponde a: {_desc_ls}.")
+        with st.expander("¿Cómo elegir LS? (orientación)"):
+            st.markdown("AASHTO 93 asocia LS a la **erosión potencial del material de apoyo** y a los **movimientos verticales "
+                        "diferenciales del suelo**; el intervalo depende del material (Tabla 2.7). Dentro del intervalo:\n\n"
+                        + "\n".join(f"- **{k}**: {v[1]}." for k, v in ORIENTACION_LS.items())
+                        + "\n\nLa ubicación dentro del intervalo es criterio del diseñador; la orientación del programa no sustituye "
+                          "el juicio geotécnico.")
+        if ls_def != int(ls_def):
+            st.caption("LS no entero: interpolación lineal en k entre las líneas adyacentes de la Fig. 3.6, como en el ejemplo resuelto de [R3].")
+        k_ls_manual, k_ls_man_origen = None, ""
+        if st.checkbox("Ingresar k corregido leído directamente en la Fig. 3.6 (en lugar de la regresión)", value=False):
+            k_ls_manual = st.number_input("k efectivo corregido por LS (pci)", 5.0, 3000.0, 100.0, step=1.0)
+            k_ls_man_origen = st.text_input("Origen del valor (Fig. 3.6)", "")
+    with cl2:
+        if modo_ls.startswith("Manual"):
+            ls_just = st.text_area("Justificación técnica del LS adoptado (obligatoria para la memoria)", P["ls_just"], height=130)
+        else:
+            _obs_ls = st.text_area("Observaciones adicionales (opcional)", P["ls_just"], height=110, key=f"obs_ls_{_ke}")
+            ls_just = (f"Criterio: {modo_ls.split(' →')[0].lower()} ({ORIENTACION_LS[modo_ls][1]}). Intervalo Tabla 2.7 para "
+                       f"{mat_ls.split(' (')[0].lower()}: {ls_min:.1f}–{ls_max:.1f} → LS = {ls_def:.1f}."
+                       + (f" {_obs_ls.strip()}" if _obs_ls.strip() else ""))
+
+    # --- Pendientes globales y k final (LS aplicado UNA vez) ---
+    pendientes_k = list(res_k["pendientes"])
+    if mr_fuera_rango:
+        pendientes_k.append("MR obtenido por correlación fuera de su rango de validez (extrapolación).")
+    if not cbr_repr:
+        pendientes_k.append("Representatividad del CBR/MR en el nivel real de apoyo de la losa no verificada.")
+    if not ls_just.strip():
+        pendientes_k.append("LS sin justificación documentada.")
+    condicionantes_k = (["ESB de referencia de la Tabla 2.7 (no medido)"] if esb_guia else [])
+    if estructura != ESTRUCTURAS[0] and k_inf_manual is None and not (k_placa_pci and placa_sobre_capa) and not esb_origen.strip():
+        pendientes_k.append("ESB manual sin origen documentado (ensayo o especificación).")
+    if estructura == ESTRUCTURAS[3] and not nombre_capa.strip():
+        pendientes_k.append("Capa de apoyo 'otra' sin descripción.")
+    for _v, _o, _n in [(k_inf_manual, k_inf_man_origen, "k∞ (Fig. 3.3)"), (k_rf_manual, k_rf_man_origen, "k estrato (Fig. 3.4)"),
+                       (k_ls_manual, k_ls_man_origen, "k corregido (Fig. 3.6)")]:
+        if _v is not None and not _o.strip():
+            pendientes_k.append(f"Valor manual de {_n} sin origen registrado.")
+    keff_k = res_k["keff"]
+    if keff_k is not None and k_ls_manual is None and ls_def > 0 and not (5 <= keff_k <= 2000):
+        pendientes_k.append(f"keff = {keff_k:.0f} pci fuera del rango digitalizado de la Fig. 3.6 (5–2000 pci).")
+    if k_ls_manual is not None:
+        k_aashto = k_ls_manual
+        k_ls_origen = "Manual: leído en la Fig. 3.6 — " + (k_ls_man_origen or "sin origen")
+    else:
+        k_aashto = k_corregido_ls(keff_k, ls_def) if keff_k else None
+        k_ls_origen = "Calculado: regresión de la Fig. 3.6 [R3]" + (" con interpolación lineal" if ls_def != int(ls_def) else "")
+    st.caption("🔒 La corrección por LS se aplica una única vez, sobre keff. El k de diseño resultante no vuelve a corregirse "
+               "en ninguna otra pestaña.")
+
+    if res_k["filas"]:
+        with st.expander("Detalle por periodo (Fig. 3.5)", expanded=False):
+            st.dataframe(pd.DataFrame(res_k["filas"]), hide_index=True, use_container_width=True)
+    f0 = res_k["filas"][0] if res_k["filas"] else {}
+    for a in res_k["advertencias"]:
+        st.warning(a)
+    if pendientes_k:
+        st.error("**Condiciones pendientes de verificación (el resultado no es concluyente mientras existan):**\n\n- "
+                 + "\n- ".join(pendientes_k))
 
 with tab2:
     st.header("Configuración AASHTO '93")
@@ -283,7 +775,7 @@ with tab2:
                                      ["Autopistas/Carreteras (k=10.8)",
                                       "Zonas Industriales (k=10.1)",
                                       "Urbanos Secundarios (k=9.4)",
-                                      "Subestaciones / Estándar (k=8.0)"])
+                                      "Subestaciones / Estándar (k=8.0)"], index=P["idx_pav"])
 
             map_k = {
                 "Autopistas/Carreteras (k=10.8)": 10.8,
@@ -296,7 +788,7 @@ with tab2:
             k_final = st.number_input("Ingrese valor de k personalizado:", 7.0, 12.0, 8.0, step=0.1)
 
         # [CORRECCIÓN f'c] Selector en MPa (valores usuales de proyecto); 1 MPa = 145.0377 psi
-        fc_mpa = st.selectbox("Resistencia f'c (MPa)", [21, 24, 28, 31, 35], index=4)
+        fc_mpa = st.selectbox("Resistencia f'c (MPa)", [21, 24, 28, 31, 35], index=P["idx_fc"])
         fc_psi = fc_mpa * 145.0377
         st.caption(f"f'c = {fc_mpa} MPa = {fc_psi:,.2f} psi")
 
@@ -324,7 +816,9 @@ with tab2:
         )
 
         if metodo_k == "Correlación AASHTO (CBR)":
-            cbr = st.number_input("CBR de la Subrasante (%)", 1.0, 100.0, 3.0, step=0.5, help="Valor de soporte del suelo natural")
+            # [MÓDULO k AASHTO 93] un solo CBR en toda la app: se toma de la pestaña "Módulo k"
+            cbr = cbr_medido
+            st.caption(f"CBR de la subrasante = **{cbr:.1f} %** (definido en la pestaña 🪨 Módulo k).")
 
             # [CORRECCIÓN k] La correlación entrega MPa/m; se convierte a pci solo como estimación
             k_corr_mpa = k_correlacion_cbr_mpa_m(cbr)
@@ -353,7 +847,7 @@ with tab2:
         st.markdown("#### 2. Mejoramiento / Sub-base")
         st.caption("El uso de una base incrementa el valor de reacción (k combinado).")
 
-        usar_base = st.checkbox("¿Incluir capa de Base/Mejoramiento?", value=True)
+        usar_base = st.checkbox("¿Incluir capa de Base/Mejoramiento?", value=P["usar_base"])
 
         if usar_base:
             c_b1, c_b2 = st.columns(2)
@@ -376,6 +870,12 @@ with tab2:
             st.metric("k Estimado sobre subrasante (referencia)", f"{k_estimado:.1f} pci")
             st.info("Diseño directo sobre subrasante natural (No recomendado para cargas altas).")
 
+        # [AJUSTE FINAL] Solado de concreto pobre: se declara en la sección, SIN aporte estructural
+        esp_solado = esp_solado_k  # [MÓDULO k AASHTO 93] un solo dato de solado (pestaña Módulo k)
+        if esp_solado > 0:
+            st.caption(f"Solado de {esp_solado:.0f} cm: **no se le asigna capacidad estructural** "
+                       "(no incrementa k ni reduce el espesor de losa).")
+
         # =========================================================
         # [CORRECCIÓN k] 3. k EFECTIVO DE DISEÑO — dato independiente de la correlación
         # =========================================================
@@ -384,23 +884,39 @@ with tab2:
         st.caption("Es el único k que entra en la ecuación AASHTO 93, en geometría (21ℓ) y en las notas de plano.")
         origen_k = st.radio(
             "Origen del k efectivo de diseño:",
-            ["Adoptado manualmente (hipótesis de proyecto)",
+            ["Procedimiento AASHTO 1993 (pestaña 🪨 Módulo k)",
+             "Adoptado manualmente (hipótesis de proyecto)",
              "Igual a la estimación anterior (correlación/ensayo + base)"],
-            index=0
+            index=P["idx_origen_k"]
         )
-        if origen_k.startswith("Adoptado"):
-            k_val = st.number_input("k efectivo adoptado (pci)", 25.0, 2000.0, 173.5, step=0.5,
-                                    help="Hanaqpampa: 173.5 pci adoptado preliminarmente, pendiente de verificación geotécnica.")
-            k_origen_txt = "ADOPTADO PRELIMINARMENTE, PENDIENTE DE VERIFICACIÓN GEOTÉCNICA"
-            st.warning("⚠️ **k efectivo adoptado preliminarmente, pendiente de verificación geotécnica.** "
-                       "No es resultado directo de la correlación CBR–k.")
+        if origen_k.startswith("Procedimiento"):
+            # [MÓDULO k AASHTO 93] k corregido por LS, calculado en la pestaña Módulo k
+            k_val = k_aashto if k_aashto else float("nan")
+            k_origen_txt = (f"AASHTO 1993: {estructura.upper()}, keff = {keff_k:.1f} pci, LS = {ls_def}"
+                            if keff_k else "AASHTO 1993: PENDIENTE")
+            k_origen_txt += " - CONDICIONES PENDIENTES DE VERIFICACIÓN GEOTÉCNICA" if pendientes_k else ""
+            if k_aashto:
+                st.info(f"k efectivo corregido (AASHTO 93, LS = {ls_def}): **{k_aashto:.1f} pci** "
+                        f"({k_aashto / FACTOR_MPA_M_A_PCI:.1f} MPa/m).")
+            else:
+                st.error("El k AASHTO no pudo calcularse: complete los datos de la pestaña 🪨 Módulo k.")
+            if pendientes_k:
+                st.warning(f"⚠️ {len(pendientes_k)} condición(es) pendiente(s) en la determinación de k (ver pestaña 🪨 Módulo k).")
+        elif origen_k.startswith("Adoptado"):
+            k_val = st.number_input("k efectivo adoptado (pci)", 25.0, 2000.0, P["k_efectivo"], step=0.5,
+                                    help="Hanaqpampa: 173.5 pci = HIPÓTESIS PROVISIONAL, requiere validación geotécnica.")
+            k_origen_txt = "HIPÓTESIS PROVISIONAL, ADOPTADO PRELIMINARMENTE - REQUIERE VALIDACIÓN GEOTÉCNICA"
+            st.warning("⚠️ **Hipótesis provisional: k efectivo adoptado preliminarmente, requiere validación geotécnica** "
+                       "(placa de carga o criterio del especialista). No es resultado directo de la correlación CBR–k "
+                       "ni un valor validado.")
         else:
             k_val = k_estimado
             k_origen_txt = ("ESTIMADO POR CORRELACIÓN CBR–k" if metodo_k == "Correlación AASHTO (CBR)"
                             else "ENSAYO DE PLACA") + (" + APORTE DE BASE" if usar_base else "")
             st.info("k efectivo = estimación anterior. Verifique que el valor sea representativo del apoyo real.")
-        st.metric("k efectivo de diseño (AASHTO 93)", f"{k_val:.1f} pci",
-                  delta=f"{k_val - k_estimado:+.1f} pci vs. estimación ({k_estimado:.1f} pci)", delta_color="off")
+        if np.isfinite(k_val):
+            st.metric("k efectivo de diseño (AASHTO 93)", f"{k_val:.1f} pci",
+                      delta=f"{k_val - k_estimado:+.1f} pci vs. estimación ({k_estimado:.1f} pci)", delta_color="off")
         st.subheader("🔗 Transferencia de Carga (J)")
 
         j_manual = st.toggle("Ingresar J manualmente", False)
@@ -434,7 +950,7 @@ with tab2:
                 }
             }
 
-            seleccion = st.radio("Seleccione escenario:", list(escenarios_j.keys()))
+            seleccion = st.radio("Seleccione escenario:", list(escenarios_j.keys()), index=P["idx_j"])
             datos_esc = escenarios_j[seleccion]
             j_val = datos_esc["valor"]
             tiene_dovelas = datos_esc["dovelas"]
@@ -511,11 +1027,18 @@ with tab2:
                 "no_convergencia": "🚨 Fallo de convergencia numérica",
             }
             st.error(f"**{titulos.get(res_aashto['estado'], 'Sin resultado')}** (k efectivo = {k_val:.1f} pci)")
-            st.write(res_aashto["mensaje"])
             if res_aashto["estado"] == "sin_raiz":
-                st.warning("No se asigna un espesor AASHTO. Revise el **k efectivo de diseño** (un k sobreestimado "
-                           "elimina la raíz). El espesor quedaría gobernado por criterios mínimos constructivos, "
-                           "decisión que debe tomar y justificar el diseñador.")
+                # [AJUSTE FINAL] Sin raíz ≠ "cualquier espesor es suficiente"
+                st.write(f"Diagnóstico numérico: el residuo de la ecuación no se anula en el dominio válido "
+                         f"(mínimo g = {res_aashto['g_min']:+.4f} en D = {res_aashto['D_g_min']*2.54:.2f} cm; "
+                         f"dominio D > {res_aashto['D_singular']*2.54:.2f} cm).")
+                st.warning("⚠️ **Esto NO demuestra que cualquier espesor sea suficiente.** Indica que la combinación de "
+                           "parámetros (en especial el **k efectivo**) queda fuera del rango en que la ecuación empírica "
+                           "AASHTO 93 es representativa, por lo que el método no permite dimensionar la losa. "
+                           "No se asigna espesor: revise k y los demás datos, o justifique el espesor con otro criterio "
+                           "documentado por el diseñador.")
+            else:
+                st.write(res_aashto["mensaje"])
 
         if esp_pulg:
             esp_exacto_cm = esp_pulg * 2.54
@@ -532,6 +1055,9 @@ with tab2:
             st.session_state['conf_res'] = conf
             st.session_state['tiene_dovelas'] = tiene_dovelas
             st.session_state['tiene_soporte'] = tiene_soporte
+            st.session_state['j_res'] = j_val
+            st.session_state['cd_res'] = cd_val
+            st.session_state['esp_solado'] = esp_solado
             st.session_state['fc_mpa_val'] = fc_mpa
             st.session_state['fc_psi_val'] = fc_psi
             st.session_state['sc_psi_val'] = sc
@@ -563,13 +1089,170 @@ with tab2:
             for _adv in res_aashto["advertencias"]:
                 st.warning(_adv)
 
+        # [MÓDULO k AASHTO 93] Verificación frente al espesor de proyecto
+        _pend = pendientes_k if origen_k.startswith("Procedimiento") else ["k adoptado sin procedimiento AASHTO sustentado"] if origen_k.startswith("Adoptado") else []
+        _cond = (condicionantes_k if origen_k.startswith("Procedimiento")
+                 else ["k estimado por correlación CBR–k / combinación de base (no procedimiento AASHTO)"] if origen_k.startswith("Igual") else [])
+        verif_estado, verif_txt = verificar_espesor(res_aashto, h_proy_cm, _pend, _cond)
+        _fn = {"CUMPLE": st.success, "NO CUMPLE": st.error}.get(verif_estado, st.warning)
+        _fn(f"**Verificación del espesor de proyecto h = {h_proy_cm:.1f} cm: {verif_estado}** — {verif_txt}")
+        if esp_pulg:
+            st.session_state['verif_estado'] = verif_estado
+            st.session_state['verif_txt'] = verif_txt
+            st.session_state['h_proy_cm'] = h_proy_cm
+            st.session_state['estructura_k'] = estructura if origen_k.startswith("Procedimiento") else None
+            st.session_state['soporte_k'] = ("SUBRASANTE PREPARADA (SIN SUBBASE ESTRUCTURAL)" if estructura == ESTRUCTURAS[0] else
+                                             f"{(nombre_capa or estructura.replace('Losa sobre ', '')).upper()} DE {dsb_pulg_k * 2.54:.0f} cm "
+                                             f"(ESB = {esb_psi_k:,.0f} psi) SOBRE SUBRASANTE" if dsb_pulg_k else
+                                             f"{(nombre_capa or estructura.replace('Losa sobre ', '')).upper()} SOBRE SUBRASANTE")
+            st.session_state['docs_proyecto'] = (P["doc_geo"], P["plano"])
+
+# =========================================================
+# [MÓDULO k AASHTO 93] Resultados, escenarios LS, nomograma y memoria (usan los parámetros de 'Parámetros de Diseño')
+# =========================================================
+with tab_k:
+    st.divider()
+    st.subheader("E. Resultados trazables")
+    st.caption(f"Parámetros tomados de las pestañas Tránsito y Parámetros: W18 = {w18_total:,.0f}; R = {conf} % (Zr = {zr:.3f}); "
+               f"S0 = {s0}; P0 = {p0}; Pt = {pt}; f'c = {fc_mpa} MPa; S'c = {sc:.2f} psi; Ec = {ec:,.0f} psi; J = {j_val}; Cd = {cd_val}.")
+    _con_capa = estructura != ESTRUCTURAS[0]
+    _res_dis = resolver_espesor_aashto(w18_total, zr, s0, p0, pt, sc, cd_val, j_val, ec, k_aashto) if k_aashto else None
+    _ve_dis, _vt_dis = verificar_espesor(_res_dis, h_proy_cm, pendientes_k, condicionantes_k) if _res_dis else ("NO CONCLUYENTE", "k no determinado")
+    _D_dis = _res_dis["D_pulg"] * 2.54 if (_res_dis and _res_dis["estado"] == "ok") else None
+    _pend_tag = "PENDIENTE DE VALIDACIÓN"
+    _fila = lambda c, v, u, o, r="": {"Concepto": c, "Valor": v, "Unidad": u, "Origen": o, "Referencia": r}
+    resumen = [
+        _fila("Subrasante: clasificación", clas_suelo or "—", "", "Ingresado" if clas_suelo else _pend_tag),
+        _fila("Subrasante: CBR", f"{cbr_medido:.1f}", "%", "Ingresado" + ("" if cbr_repr else f" — {_pend_tag} (representatividad)"), cbr_cond),
+        _fila("Subrasante: MR", f"{f0['MR (psi)']:,.0f} psi = {f0['MR (MPa)']:.1f} MPa" if f0.get("MR (psi)") else "—", "",
+              (mr_origen + (f" — {_pend_tag} (extrapolación)" if mr_fuera_rango else "")) if f0.get("MR (psi)") else "No aplica", "[R1]/[R4]"),
+        _fila("Capa de apoyo", (nombre_capa or estructura.replace("Losa sobre ", "")) if _con_capa else "Ninguna", "", "Ingresado"),
+        _fila("Capa de apoyo: DSB / ESB", f"{dsb_pulg_k * 2.54:.1f} cm / {esb_psi_k:,.0f} psi" if _con_capa and dsb_pulg_k else "No aplica", "",
+              ((esb_origen + " (referencia, no medido)") if esb_guia else ("Ingresado — " + (esb_origen or _pend_tag))) if _con_capa else "No aplica", "Tabla 2.7"),
+        _fila("k inicial de la subrasante", f"{f0['k inicial (pci)']:.1f}" if f0.get("k inicial (pci)") else "—", "pci", res_k["origen"]["k_ini"], "[R1] k = MR/19.4"),
+        _fila("k compuesto k∞", f"{f0['k∞ (pci)']:.1f}" if f0 else "—", "pci",
+              res_k["origen"]["k_inf"] + (f" — {k_inf_man_origen}" if k_inf_manual is not None else ""), "Fig. 3.3 / [R2] Ec. 5.22"),
+        _fila("Corrección por estrato rígido", f"{f0['k estrato (pci)']:.1f}" if f0 and res_k["origen"]["k_rf"] not in ("No aplica", "PENDIENTE") else res_k["origen"]["k_rf"],
+              "pci", res_k["origen"]["k_rf"] + (f" — {k_rf_man_origen}" if k_rf_manual is not None else ""), "Fig. 3.4"),
+        _fila("k efectivo antes de LS (Fig. 3.5)", f"{keff_k:.1f}" if keff_k else "—", "pci",
+              f"Calculado: {len(factores)} periodo(s)" if keff_k else _pend_tag, "[R2] Ec. 5.24"),
+        _fila("LS", f"{ls_def:.1f}" if k_ls_manual is None else "incluido en valor manual", "",
+              f"Seleccionado en {ls_min:.0f}–{ls_max:.0f} ({mat_ls.split(' (')[0]})" + ("" if ls_just.strip() else f" — {_pend_tag} (sin justificación)"), "Tabla 2.7"),
+        _fila("k efectivo de diseño", f"{k_aashto:.1f} pci = {k_aashto / FACTOR_MPA_M_A_PCI:.1f} MPa/m" if k_aashto else "—", "",
+              k_ls_origen if k_aashto else _pend_tag, "Fig. 3.6 / [R3]"),
+        _fila("Espesor teórico AASHTO", f"{_D_dis:.2f}" if _D_dis else "Sin raíz / no calculado", "cm", "Calculado" if _D_dis else _pend_tag, "Ec. AASHTO 93"),
+        _fila("Espesor adoptado (redondeo hacia arriba, mín. 15 cm)", f"{max(np.ceil(_D_dis), 15.0):.0f}" if _D_dis else "No definido", "cm", "Calculado" if _D_dis else "—"),
+        _fila(f"Verificación h de proyecto = {h_proy_cm:.1f} cm", _ve_dis, "", _vt_dis),
+    ]
+    st.dataframe(pd.DataFrame(resumen), hide_index=True, use_container_width=True)
+    st.caption("Origen: **Calculado** = ecuación documentada; **Ingresado** = dato del usuario; **Manual** = lectura de nomograma o "
+               "fuente externa registrada; **PENDIENTE DE VALIDACIÓN** = dato faltante o fuera de aplicabilidad.")
+
+    st.subheader("F. Escenarios de pérdida de soporte (sensibilidad)")
+    filas_esc = []
+    if keff_k:
+        _cond_k = condicionantes_k
+        _ls_list = sorted(set([0.0, 1.0, 2.0, 3.0, float(ls_def)]))
+        for _ls in _ls_list:
+            _nom = {0.0: "Sin pérdida de soporte", 1.0: "Pérdida moderada", 2.0: "Pérdida mayor", 3.0: "Pérdida severa"}.get(_ls, "LS intermedio")
+            _k = k_corregido_ls(keff_k, _ls)
+            _pend_ls = [p for p in pendientes_k if not p.startswith("keff =") and not p.startswith("LS sin")]
+            if _ls > 0 and not (5 <= keff_k <= 2000):
+                _pend_ls.append("keff fuera del rango de la Fig. 3.6")
+            if not (ls_min <= _ls <= ls_max):
+                _pend_ls.append("LS fuera del intervalo de la Tabla 2.7 para el material")
+            _rs = resolver_espesor_aashto(w18_total, zr, s0, p0, pt, sc, cd_val, j_val, ec, _k)
+            _ve, _vt = verificar_espesor(_rs, h_proy_cm, _pend_ls, _cond_k)
+            filas_esc.append({"Escenario": _nom + (" ◀ adoptado" if (_ls == ls_def and k_ls_manual is None) else ""),
+                              "k∞ (pci)": round(f0.get("k∞ (pci)", 0), 1),
+                              "keff antes LS (pci)": round(keff_k, 1), "LS": _ls,
+                              "En intervalo Tabla 2.7": "Sí" if ls_min <= _ls <= ls_max else "No",
+                              "k corregido (pci)": round(_k, 1), "k corregido (MPa/m)": round(_k / FACTOR_MPA_M_A_PCI, 1),
+                              "Espesor teórico (cm)": f"{_rs['D_pulg']*2.54:.2f}" if _rs["estado"] == "ok" else "Sin raíz",
+                              f"Verificación {h_proy_cm:.0f} cm": _ve, "Detalle": _vt})
+        df_esc = pd.DataFrame(filas_esc)
+        st.dataframe(df_esc, hide_index=True, use_container_width=True)
+        try:
+            _dk = lambda kk: resolver_espesor_aashto(w18_total, zr, s0, p0, pt, sc, cd_val, j_val, ec, kk)["D_pulg"]
+            _k_hi = max(kk for kk in np.geomspace(10, 2000, 80) if _dk(kk))  # mayor k con raíz válida
+            _kmin = brentq(lambda kk: _dk(kk) * 2.54 - h_proy_cm, 10, _k_hi)
+            st.info(f"📌 Para que el espesor requerido sea ≤ {h_proy_cm:.1f} cm se necesita **k de diseño ≥ {_kmin:.1f} pci** "
+                    f"({_kmin / FACTOR_MPA_M_A_PCI:.1f} MPa/m), con los demás parámetros fijos.")
+        except Exception:
+            _kmin = None
+        st.caption("Los escenarios son de **sensibilidad**; el LS de diseño lo fija el diseñador con justificación. "
+                   "Un escenario sin raíz se reporta NO CONCLUYENTE: no demuestra que cualquier espesor sea suficiente.")
+
+        # --- Nomograma Fig. 3.6 reproducido ---
+        import altair as alt
+        _kk = np.geomspace(5, 2000, 60)
+        _lin = pd.DataFrame([{"keff (pci)": x, "k corregido (pci)": k_corregido_ls(x, l), "Curva": f"LS = {l}"} for l in range(4) for x in _kk])
+        _pts = pd.DataFrame([{"keff (pci)": a, "k corregido (pci)": b, "Curva": f"LS = {l}"} for l, v in NOMOGRAMA_LS_PUNTOS.items() for a, b in v])
+        _usr = pd.DataFrame([{"keff (pci)": keff_k, "k corregido (pci)": k_corregido_ls(keff_k, l), "Curva": f"LS = {l}"} for l in range(4)])
+        _ex = alt.Scale(type="log")
+        _ch = (alt.Chart(_lin).mark_line().encode(x=alt.X("keff (pci):Q", scale=_ex), y=alt.Y("k corregido (pci):Q", scale=_ex), color="Curva:N")
+               + alt.Chart(_pts).mark_point(shape="cross", size=60).encode(x="keff (pci):Q", y="k corregido (pci):Q", color="Curva:N")
+               + alt.Chart(_usr).mark_point(filled=True, size=120, shape="diamond").encode(x="keff (pci):Q", y="k corregido (pci):Q", color="Curva:N",
+                                                                                           tooltip=["Curva", "keff (pci)", "k corregido (pci)"])
+               ).properties(height=380, title="Fig. 3.6 AASHTO 93 – corrección por LS (líneas: regresión [R3]; cruces: puntos digitalizados [R3]; rombos: este proyecto)")
+        st.altair_chart(_ch, use_container_width=True)
+        if keff_k > 2000:
+            st.warning("El keff de este proyecto está fuera del rango graficado del nomograma (5–2000 pci).")
+        st.caption("Las Figs. 3.3 y 3.4 se resuelven con sus ecuaciones de regresión (AASHTO 1986, Apéndice LL) o con el valor "
+                   "leído e ingresado manualmente; no se grafican.")
+
+        # --- Memoria de cálculo ---
+        _docs = f"Estudio geotécnico: {P['doc_geo']}. Plano de pavimentos: {P['plano']}." if P["doc_geo"] else ""
+        _tabla_res = "| Concepto | Valor | Unidad | Origen |\n|---|---|---|---|\n" + \
+            "\n".join(f"| {r['Concepto']} | {r['Valor']} | {r['Unidad']} | {r['Origen']} |" for r in resumen)
+        _tabla_md = "| Escenario | keff (pci) | LS | k corregido (pci) | Espesor teórico (cm) | Verificación |\n|---|---|---|---|---|---|\n" + \
+            "\n".join(f"| {r['Escenario']} | {r['keff antes LS (pci)']} | {r['LS']} | {r['k corregido (pci)']} | {r['Espesor teórico (cm)']} | {r[f'Verificación {h_proy_cm:.0f} cm']} |" for r in filas_esc)
+        memoria = f"""## Determinación del módulo de reacción efectivo y verificación del espesor de losa (AASHTO 1993)
+
+**Datos.** {_docs} Subrasante: {clas_suelo or 'sin clasificar'}; CBR = {cbr_medido:.1f} % ({cbr_cond or 'condición no indicada'}).
+Apoyo de la losa: {estructura.lower()}{f'; solado de concreto pobre de {esp_solado_k:.0f} cm (f′c = {fc_solado:.0f} MPa), sin capacidad estructural asignada' if esp_solado_k > 0 else ''}.
+Diseño: W18 = {w18_total:,.0f} ESAL; R = {conf} % (Zr = {zr:.3f}); S0 = {s0}; P0 = {p0}; Pt = {pt}; f′c = {fc_mpa} MPa;
+S′c = {sc:.2f} psi; Ec = {ec:,.0f} psi; J = {j_val}; Cd = {cd_val}; espesor de proyecto h = {h_proy_cm:.1f} cm.
+
+**Metodología (Guía AASHTO 1993, Parte II, sec. 3.2).**
+1. k inicial de la subrasante: k = MR/19,4 [R1] (o ensayo de placa). MR: {mr_origen}{' — EXTRAPOLACIÓN fuera del rango de la correlación' if mr_fuera_rango else ''}.
+2. k compuesto: {res_k['origen']['k_inf']}. Ec. 5.22 [R2]: ln k∞ = −2,807 + 0,1253(ln DSB)² + 1,062 ln MR + 0,1282 ln DSB·ln ESB − 0,4114 ln DSB − 0,0581 ln ESB − 0,1317 ln DSB·ln MR.
+3. Estrato rígido (Fig. 3.4): {estrato.lower()}; {res_k['origen']['k_rf']}.
+4. Daño relativo (Fig. 3.5): ur = (D^0,75 − 0,39·k^0,25)^3,42 con D = {h_proy_cm * PULG_POR_CM:.2f} pulg; {len(factores)} periodo(s) → keff = {keff_k:.1f} pci.
+5. Pérdida de soporte (Tabla 2.7, Fig. 3.6): material «{mat_ls}», intervalo LS {ls_min:.1f}–{ls_max:.1f}; LS de diseño = {ls_def:.1f}. {ls_just}
+   {k_ls_origen}. LS=1: k = 10^(0,8311·log keff − 0,0643); LS=2: k = 10^(0,6408·log keff − 0,0834); LS=3: k = 10^(0,538·log keff − 0,1806) [R3]. La corrección se aplica una sola vez.
+
+**Resumen trazable.**
+
+{_tabla_res}
+
+**Sensibilidad a LS.**
+
+{_tabla_md}
+
+{f'k de diseño mínimo para h ≤ {h_proy_cm:.1f} cm: {_kmin:.1f} pci.' if _kmin else ''}
+
+**Condiciones pendientes.** {'; '.join(pendientes_k) if pendientes_k else 'Ninguna registrada.'}
+
+**Referencias.**
+[R1] AASHTO (1993). *Guide for Design of Pavement Structures*. Parte I sec. 1.5; Parte II cap. 3; Tabla 2.7; Figs. 3.3–3.6.
+[R2] FHWA (2006). *Geotechnical Aspects of Pavements*, FHWA NHI-05-037, sec. 5.4.6, Ecs. 5.20–5.24, Tabla 5-45. https://www.fhwa.dot.gov/engineering/geotech/pubs/05037/05c.cfm
+[R3] García Aladín, M.F. et al. (2024). Desarrollo de ecuaciones sustitutivas… *Revista Eduweb* 18(1), 9-23. https://doi.org/10.46502/issn.1856-7576/2024.18.01.1
+[R4] Powell, W.D. et al. (1984). *The structural design of bituminous roads*. TRRL LR 1132; NCHRP 1-37A (2004).
+"""
+        with st.expander("📄 Texto para la memoria de cálculo", expanded=False):
+            st.markdown(memoria)
+            st.download_button("⬇️ Descargar memoria (.md)", memoria, file_name="memoria_k_efectivo_AASHTO93.md", mime="text/markdown")
+    else:
+        st.error("No es posible evaluar escenarios: el k efectivo no está determinado (ver pendientes).")
+
 with tab3:
     st.header("📐 Recomendaciones Geométricas y Modulación")
 
     if 'esp_final_cm' not in st.session_state:
         st.info("⚠️ Realice el cálculo en la pestaña 'Parámetros de Diseño' para habilitar esta sección.")
     else:
-        st.warning("⚠️ **Tránsito Excéntrico:** En subestaciones, el tránsito suele circular cerca del borde. Se recomienda considerar bordes engrosados +25% del espesor en perímetros.")
+        st.warning("⚠️ **Tránsito Excéntrico:** En subestaciones, el tránsito suele circular cerca del borde. Como recomendación genérica (no detalle aprobado) puede evaluarse borde engrosado +25% en perímetros; aplicar solo si coincide con los planos del proyecto.")
 
         esp_cm_actual = st.session_state['esp_final_cm']
 
@@ -765,7 +1448,34 @@ with tab3:
             esp_base_txt = st.session_state.get('esp_base_guardado', 15)
 
             cbr_linea = f"CBR SUBRASANTE = {cbr_str}%" if isinstance(cbr_str, (int, float)) else f"SUELO NATURAL ({cbr_str})"
-            base_linea = f"SUB-BASE DE {esp_base_txt} cm DE {tipo_base_txt.upper()}" if usa_base else "DIRECTO SOBRE SUBRASANTE COMPACTADA"
+            j_txt = st.session_state.get('j_res', 0)
+            esp_solado_txt = st.session_state.get('esp_solado', 0.0)
+
+            # [AJUSTE FINAL] Sección real: losa / solado (sin aporte estructural) / soporte
+            _est_k = st.session_state.get('estructura_k')
+            if _est_k:  # [MÓDULO k AASHTO 93] la sección sigue la configuración usada para determinar k
+                soporte_linea = st.session_state.get('soporte_k', "SUBRASANTE")
+            elif usa_base:
+                soporte_linea = f"SUB-BASE DE {esp_base_txt} cm DE {tipo_base_txt.upper()} SOBRE SUBRASANTE"
+            else:
+                soporte_linea = "SUBRASANTE PREPARADA (SIN SUBBASE GRANULAR CONVENCIONAL)"
+            if esp_solado_txt > 0:
+                seccion_linea = (f"LOSA DE CONCRETO h = {D:.1f} cm SOBRE SOLADO DE CONCRETO POBRE DE {esp_solado_txt:.0f} cm, "
+                                 f"SOBRE {soporte_linea}. AL SOLADO NO SE LE ASIGNA CAPACIDAD ESTRUCTURAL EN EL DISEÑO (NO MODIFICA k).")
+            else:
+                seccion_linea = f"LOSA DE CONCRETO h = {D:.1f} cm SOBRE {soporte_linea}."
+
+            # [AJUSTE FINAL] Junta transversal coherente con el escenario seleccionado
+            if dov_check:
+                junta_transv = (f"PASAJUNTAS (DOVELAS) DE ACERO LISO GRADO 60 {dov_info}. MITAD DE LA BARRA "
+                                f"ENGRASADA / ENFUNDADA PARA PERMITIR LIBRE MOVIMIENTO.")
+            else:
+                junta_transv = (f"SIN PASADORES. TRANSFERENCIA DE CARGA POR TRABAZÓN DE AGREGADOS "
+                                f"(J = {j_txt:.2f} ADOPTADO EN EL DISEÑO).")
+            if ama_check:
+                junta_long = f"BARRAS DE AMARRE CORRUGADAS GRADO 60 ({specs_amarre}). UBICACIÓN: {' + '.join(lista_amarres).upper()}."
+            else:
+                junta_long = "NO SE REQUIEREN BARRAS DE AMARRE SEGÚN LA CONFIGURACIÓN SELECCIONADA (SIN JUNTA LONGITUDINAL NI BORDILLO ANCLADO)."
 
             texto_planos = f"""
 ESPECIFICACIONES TÉCNICAS Y NOTAS DE PAVIMENTO RÍGIDO:
@@ -776,23 +1486,29 @@ ESPECIFICACIONES TÉCNICAS Y NOTAS DE PAVIMENTO RÍGIDO:
    − RESISTENCIA DEL SUELO: {cbr_linea}.
    − MÓDULO DE REACCIÓN EFECTIVO DE DISEÑO: k = {k_comb:.1f} pci ({st.session_state.get('k_origen', 'ORIGEN NO REGISTRADO')}).
    − RESISTENCIA DEL CONCRETO: f'c = {fc_val} MPa ({fc_psi_txt:,.2f} psi) | MÓDULO DE RUPTURA S'c = {sc_val:.1f} psi.
+   − TRANSFERENCIA DE CARGA J = {j_txt:.2f} | COEFICIENTE DE DRENAJE Cd = {st.session_state.get('cd_res', 0):.2f}.
 
 2. ESTRUCTURA Y GEOMETRÍA DEL PAVIMENTO:
-   − ESPESOR DE LOSA DE CONCRETO ADOPTADO: h = {D:.1f} cm.
-   − CAPA DE SOPORTE ESTRUCTURAL: {base_linea}.
+   − ESPESOR DE LOSA REQUERIDO: h = {D:.1f} cm (TEÓRICO AASHTO {st.session_state.get('esp_pulg_base', 0)*2.54:.2f} cm, REDONDEADO HACIA ARRIBA).
+   − VERIFICACIÓN DEL ESPESOR DE PROYECTO h = {st.session_state.get('h_proy_cm', 0):.1f} cm: {st.session_state.get('verif_estado', 'N/D')} ({st.session_state.get('verif_txt', '').upper()}).{chr(10) + '   − DOCUMENTOS DE REFERENCIA: ' + ' / '.join(d for d in st.session_state.get('docs_proyecto', ('', '')) if d) + '.' if any(st.session_state.get('docs_proyecto', ('', ''))) else ''}
+   − SECCIÓN: {seccion_linea}
    − MODULACIÓN DE LOSAS: PAÑOS CUADRADOS/RECTANGULARES DE {ancho_losa:.2f} m x {largo_sug:.2f} m.
-   − REFUERZO PERIMETRAL EN BORDE LIBRE: BORDE ENGROSADO DE h = {D*1.25:.1f} cm (+25%) EN FRANJA DE 0.50 m (EN PERÍMETROS SIN SARDINEL ANCLADO).
    − CONTROL TÉRMICO PRELIMINAR: VERIFICAR MODULACIÓN, MOVIMIENTO DE JUNTAS Y RESTRICCIONES SEGÚN CONDICIONES TÉRMICAS DEL PROYECTO.
 
 3. JUNTAS Y REFUERZO DE ACERO:
-   − JUNTA TRANSVERSAL DE CONTRACCIÓN: PASAJUNTAS (DOVELAS) DE ACERO LISO GRADO 60 {dov_info}. MITAD DE LA BARRA ENGRASADA / ENFUNDADA PARA PERMITIR LIBRE EXPANSIÓN.
-   − JUNTA LONGITUDINAL DE CONSTRUCCIÓN/CENTRAL: BARRAS DE AMARRE CORRUGADAS GRADO 60 ({specs_amarre}) EN {ama_info.upper()}.
+   − JUNTA TRANSVERSAL DE CONTRACCIÓN: {junta_transv}
+   − JUNTA LONGITUDINAL DE CONSTRUCCIÓN/CENTRAL: {junta_long}
 
-4. PROCEDIMIENTO Y CONTROL CONSTRUCTIVO:
-   − COMPACTACIÓN DE CAPAS GRANULARES: DENSIDAD MÍNIMA DEL 98% DEL PROCTOR MODIFICADO.
-   − ASERRADO DE JUNTAS: CORTE TEMPRANO DE JUNTAS ENTRE LAS 4 h Y 12 h POSTERIORES AL VACIADO.
-   − SELLADO DE JUNTAS: CORDÓN DE RESPALDO (BACKER ROD) Y SELLANTE ELASTOMÉRICO DE POLIURETANO.
+4. RECOMENDACIONES GENÉRICAS DEL PROGRAMA (NO CONSTITUYEN DETALLE APROBADO;
+   VERIFICAR Y AJUSTAR SEGÚN PLANOS Y ESPECIFICACIONES TÉCNICAS DEL PROYECTO):
+   − BORDES LIBRES: EVALUAR BORDE ENGROSADO (REFERENCIA h = {D*1.25:.1f} cm, +25%, FRANJA 0.50 m) SOLO SI LO INDICAN LOS PLANOS.
+   − COMPACTACIÓN: SEGÚN ESPECIFICACIÓN DEL PROYECTO (REFERENCIA GENÉRICA PARA CAPAS GRANULARES: 98% DEL PROCTOR MODIFICADO).
+   − ASERRADO DE JUNTAS: REFERENCIA GENÉRICA, CORTE ENTRE 4 h Y 12 h POSTERIORES AL VACIADO, SEGÚN CONDICIONES DE OBRA.
+   − SELLADO DE JUNTAS: REFERENCIA GENÉRICA, CORDÓN DE RESPALDO (BACKER ROD) Y SELLANTE ELASTOMÉRICO, SEGÚN ESPECIFICACIÓN DEL PROYECTO.
+   − DIÁMETROS, LONGITUDES Y SEPARACIONES DE ACERO INDICADOS SON VALORES DE REFERENCIA: CONFIRMAR CONTRA EL DETALLE DE PLANOS.
 """
+            st.warning("⚠️ Las notas del apartado 4 y los diámetros de acero son **recomendaciones genéricas** del programa: "
+                       "no son detalles aprobados. Compárelas con los planos y especificaciones del proyecto antes de usarlas.")
             st.code(texto_planos, language="text")
 
 with tab4:
@@ -827,16 +1543,31 @@ with tab4:
         st.info(f"📌 **Punto de diseño:** k efectivo = {st.session_state.get('k_res', 0):.1f} pci "
                 f"({st.session_state.get('k_origen', 'N/D').lower()}) → espesor adoptado "
                 f"{st.session_state.get('esp_final_cm', 0):.1f} cm. "
-                "El barrido inferior usa el k **estimado por correlación CBR–k (MPa/m → pci)** y es solo de sensibilidad.")
+                "El barrido es solo de sensibilidad.")
+        # [MÓDULO k AASHTO 93] el barrido usa la MISMA cadena que el k de diseño cuando éste es AASHTO
+        usar_cadena_aashto = (origen_k.startswith("Procedimiento") and fuente_mr in CORRELACIONES_MR
+                              and k_inf_manual is None and k_rf_manual is None and k_ls_manual is None)
+        if usar_cadena_aashto:
+            st.caption(f"Cadena por CBR: {fuente_mr} → {estructura.lower()} → estrato: {estrato.lower()} → Fig. 3.5 → LS = {ls_def}. "
+                       "Filas fuera del rango de la correlación se marcan.")
+        else:
+            st.caption("Cadena por CBR: correlación CBR–k (MPa/m → pci) + aporte de base (método de estimación anterior).")
 
         for c_val in rango_cbr:
-            # [CORRECCIÓN k] correlación en MPa/m convertida a pci
-            k_nat_iter = k_correlacion_cbr_mpa_m(c_val) * FACTOR_MPA_M_A_PCI
-
-            if usa_base_sim:
-                ki_final = calcular_k_combinado(k_nat_iter, esp_base_sim, tipo_base_sim)
+            if usar_cadena_aashto:
+                _c = CORRELACIONES_MR[fuente_mr]
+                _r = determinar_k_aashto(estructura, [_c["f"](c_val) * f for f in factores], h_proy_cm * PULG_POR_CM,
+                                         dsb_pulg_k, esb_psi_k, None, estrato, dsg_pulg_k)
+                ki_final = k_corregido_ls(_r["keff"], ls_def) if _r["keff"] else np.nan
+                _fuera = not (_c["cbr_min"] <= c_val <= _c["cbr_max"])
             else:
-                ki_final = k_nat_iter
+                # [CORRECCIÓN k] correlación en MPa/m convertida a pci
+                k_nat_iter = k_correlacion_cbr_mpa_m(c_val) * FACTOR_MPA_M_A_PCI
+                if usa_base_sim:
+                    ki_final = calcular_k_combinado(k_nat_iter, esp_base_sim, tipo_base_sim)
+                else:
+                    ki_final = k_nat_iter
+                _fuera = False
 
             res_iter = resolver_espesor_aashto(
                 st.session_state['w18_res'], zr, s0, p0, pt, sc, cd_val, j_val, st.session_state['ec_res'], ki_final
@@ -850,8 +1581,9 @@ with tab4:
                     "k Comb. (pci)": round(ki_final, 1),
                     "Espesor Numérico": np.nan,
                     "Espesor Calc. (cm)": "Sin raíz AASHTO" if res_iter["estado"] == "sin_raiz" else res_iter["estado"],
-                    "Espesor Adoptado (cm)": "Criterio mínimo",
-                    "Estado": "ℹ️ No gobierna AASHTO" if res_iter["estado"] == "sin_raiz" else "🚨 Revisar",
+                    "Espesor Adoptado (cm)": "No definido",
+                    "Estado": ("⚠️ Sin raíz: revisar k (no implica espesor suficiente)" if res_iter["estado"] == "sin_raiz" else "🚨 Revisar")
+                              + (" | CBR fuera de rango de la correlación MR" if _fuera else ""),
                 })
 
             if esp_pulg:
@@ -865,7 +1597,8 @@ with tab4:
                 }
 
                 if esp_cm <= 25.0:
-                    adoptado = max(round(esp_cm, 0), 15.0)
+                    # [AJUSTE FINAL] redondeo SIEMPRE hacia arriba (mismo criterio que el cálculo principal)
+                    adoptado = max(float(np.ceil(esp_cm)), 15.0)
                     row["Espesor Calc. (cm)"] = round(esp_cm, 2)
                     row["Espesor Adoptado (cm)"] = adoptado
                     row["Estado"] = "✅ OK"
@@ -877,13 +1610,16 @@ with tab4:
                     row["Espesor Calc. (cm)"] = f"Excede ({round(esp_cm,1)})"
                     row["Espesor Adoptado (cm)"] = "> 25cm"
                     row["Estado"] = "🚨 Crítico"
+                if _fuera:
+                    row["Estado"] += " | CBR fuera de rango de la correlación MR"
 
                 datos_abaco.append(row)
 
         if datos_abaco:
             df = pd.DataFrame(datos_abaco)
             st.subheader("📋 Tabla de Sensibilidad (Considerando Estructura de Base)")
-            st.table(df.drop(columns=["Espesor Numérico"]))
+            # Columnas mixtas (número/texto) se muestran como texto para evitar errores de serialización
+            st.table(df.drop(columns=["Espesor Numérico"]).astype({"Espesor Calc. (cm)": str, "Espesor Adoptado (cm)": str}))
 
             if alerta_detectada:
                 st.warning("""
